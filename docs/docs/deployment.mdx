@@ -1,0 +1,181 @@
+---
+title: "Deployment"
+description: "Self-host Vexa with Docker Compose — no egress, with bring-your-own inference."
+---
+
+Vexa runs **in your own environment** — open-source, self-hostable, and able to run with no egress. Data, recordings, and
+agent state stay on infrastructure you control. This page is the Docker Compose path; the other two
+supported shapes are [Vexa Lite](/deployment-lite) (one container, no Docker socket) and
+[Kubernetes](/deployment-kubernetes) (Helm, a Pod per bot).
+
+## Quick start (Docker Compose)
+
+Prerequisites: a Linux host (Ubuntu 24.04) for production, **Docker engine ≥ v26** (agent workers
+mount each granted workspace as an isolated volume subpath — older engines fail worker creation;
+`make all` checks and refuses), `git`, `curl`. A Mac with Docker Desktop works for a local
+evaluation — everything runs in containers either way. Published `vexaai/v012-*` images include
+`linux/arm64` variants alongside `linux/amd64`, so Docker on Apple Silicon pulls arm64 where
+available — but the arm64 images are published **best-effort**: release CI currently validates
+only the amd64 images (no arm64 execution leg yet), so treat Apple Silicon as experimental.
+`vexaai/vexa-bot` remains amd64-only (the install pulls the published image; `make bot` builds a local `vexa/vexa-bot:dev` for development). For GPU transcription on
+Mac, point `TRANSCRIPTION_SERVICE_URL` at any OpenAI-compatible local endpoint
+(see [Configuration](/configuration)).
+
+```bash
+curl -fsSL https://get.docker.com | sh
+git clone https://github.com/Vexa-ai/vexa.git && cd vexa
+
+make all      # full stack via Docker Compose — each service in its own container
+make bot      # build the meeting bot FROM SOURCE — required before a bot can join a meeting
+```
+
+`make all` seeds `.env` from `.env.example`, brings the stack up, and **prints an API key plus the
+service URLs** when it's done. The **meeting bot is built from source** (`make bot`), **not pulled** —
+the published `vexaai/vexa-bot:dev` on Docker Hub is the older 0.10 line and is **not compatible** with
+this stack's `lifecycle.v1` (bots reach `joining` then fail). `make all` warns loudly if the bot image
+is missing. For a transcript, set a **transcription (STT) token** in `.env`
+(`TRANSCRIPTION_SERVICE_TOKEN`) — get one at `vexa.ai/account`, or self-host the transcription service on
+a GPU so the audio path never calls out. The API is then at `http://localhost:18056` (the gateway) and the
+terminal web workbench at `http://localhost:13000`.
+
+**Don't have a key yet?** Hosted: sign in at [vexa.ai/signin](https://vexa.ai/signin) with a Google
+account and copy your key from [your account page](https://vexa.ai/account) — free credit, no card
+required. Self-hosted: `make all` prints a key when the stack comes up.
+
+## The stack
+
+| Service | Role |
+|---|---|
+| **gateway** (`:18056`) | the one front door — auth, scopes, routing |
+| **admin-api** | users + API keys |
+| **meeting-api** | bots, transcripts, **recordings** (to object storage) |
+| **runtime** | spawns bot + agent **containers** on demand (via the Docker socket) |
+| **agent-api** | the [agent control plane](/api/agent) — dispatch, chat, routines, events |
+| **terminal** (`:13000`) | the web workbench — proxies `/ws` → gateway and REST/login → agent-api/admin-api |
+| redis (Valkey) · postgres · **minio** | bus + scheduler · metadata · object storage (recordings + workspaces) |
+
+The **bot is not a long-running service** — the [runtime](/core/runtime) spawns a browser container per
+meeting (`BROWSER_IMAGE`) and an agent container per dispatch (`AGENT_IMAGE`), then reaps them. The
+`BROWSER_IMAGE` is **built from source** here (`make bot`) and the runtime spawns it **without pulling**
+— so it must exist locally before any bot can join (build it once; `make all` checks and warns if it's
+absent).
+
+## Configuration
+
+- **Transcription (STT)** — `TRANSCRIPTION_SERVICE_URL` / `TRANSCRIPTION_SERVICE_TOKEN`. Unset →
+  default `POST /bots` answers **503** (refuse loud). Capture-only: set `TRANSCRIBE_ENABLED=false`
+  or pass `{"transcribe_enabled": false}` on the spawn. See
+  [Configuration](/configuration#transcription-stt).
+- **Object storage** — MinIO (`MINIO_*`): meeting recordings and agent workspaces live in your bucket.
+  The default `MINIO_HOST_PORT=9000` is a common port — if it's already taken on your host
+  (`make all` fails with `bind … 127.0.0.1:9000 … address already in use`), set a free port in `.env`.
+- **Agent inference** — bring your own: point the agent at your endpoint so no inference leaves the
+  network (`VEXA_AGENT_MODEL` / mounted credentials).
+- **Secrets** — `ADMIN_TOKEN`, `INTERNAL_API_SECRET`, DB credentials. Set real values before exposing.
+
+## Transcription (the separate GPU unit)
+
+Speech-to-text is the one **GPU workload**, so it is **carved out** of the main stack: `make all`
+runs GPU-free and anywhere, and the STT service is its own deploy unit at
+[`deploy/transcription`](https://github.com/Vexa-ai/vexa/tree/main/deploy/transcription)
+([`core/meetings/services/transcription`](https://github.com/Vexa-ai/vexa/tree/main/core/meetings/services/transcription)
+is the brick — faster-whisper / CTranslate2 behind an OpenAI-compatible `/v1/audio/transcriptions`).
+Language is detected per transcription window and stamped on each segment; force a single language
+via the bot request's `language` (see [Send a bot](/how-to/send-a-bot)).
+
+Stand it up wherever a GPU lives (the same host or a dedicated GPU box):
+
+```bash
+cd deploy/transcription
+cp .env.example .env          # set MODEL_SIZE, API_TOKEN, TRANSCRIPTION_LB_PORT
+docker compose up -d          # GPU (needs nvidia-container-toolkit)
+# no GPU? CPU variant (slower, use a smaller model):
+docker compose -f docker-compose.cpu.yml up -d
+curl http://localhost:8083/health   # waits on the model load
+```
+
+**CPU concurrency:** the worker's admission cap (`MAX_ACTIVE_REQUESTS`) defaults to `20` only when
+`DEVICE=cuda` (sized on an RTX 4090); on any other device (`cpu`, `auto`, `mps`) it defaults to `2`,
+because 20 CPU jobs sharing the cores never finish and the worker deadlocks while still reporting
+healthy. Set `MAX_ACTIVE_REQUESTS` explicitly if your hardware differs; an explicit value always wins.
+
+Then point the main stack at it in `deploy/compose/.env`:
+
+```bash
+TRANSCRIPTION_SERVICE_URL=http://<gpu-host>:8083   # base URL; client appends /v1/audio/transcriptions
+TRANSCRIPTION_SERVICE_TOKEN=<same as the unit's API_TOKEN>
+```
+
+**Which model id goes where:** the stack sends `TRANSCRIPTION_MODEL` as the OpenAI-compatible
+`model` field on every request (unset → `whisper-1`). The **bundled unit ignores it** — pick its
+model with the unit's own `MODEL_SIZE`. Backends that **validate** the field need the right id:
+**Groq** → `whisper-large-v3-turbo`, **OpenAI** → `whisper-1` / `gpt-4o-transcribe`,
+**vLLM/LiteLLM** → the exact served model name. Any OpenAI-compatible
+`/v1/audio/transcriptions` endpoint works: set `TRANSCRIPTION_SERVICE_URL` to its base URL,
+`TRANSCRIPTION_SERVICE_TOKEN` to its key, and `TRANSCRIPTION_MODEL` to the id it expects.
+
+Now bots transcribe end-to-end: **bot → transcription service → segments → meeting-api `collector`
+→ live fan-out**. Scale by adding workers (one GPU each) in the unit's `docker-compose.yml` +
+`nginx.conf`.
+
+## Publishing behind a reverse proxy
+
+`make all` binds every service to `127.0.0.1` (loopback only). To expose the **terminal** at a public
+hostname, put a TLS-terminating reverse proxy in front of the terminal port (`TERMINAL_PORT`, default
+`13000`) and tell the terminal its public origin so auth cookies and OAuth callbacks are correct:
+
+```bash
+# deploy/compose/.env
+NEXTAUTH_URL=https://your-host.example.com
+NEXTAUTH_SECRET=<a strong random secret>   # don't ship the dev default
+```
+
+An nginx vhost (the terminal proxies `/ws` to the gateway itself, so the proxy only needs standard
+WebSocket-upgrade headers):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name your-host.example.com;
+    ssl_certificate     /etc/letsencrypt/live/your-host.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-host.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:13000;       # TERMINAL_PORT
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;   # terminal /ws → gateway
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+If you publish the **gateway** (`:18056`) through a reverse proxy, set `GUARD_TRUSTED_PROXIES` to the
+proxy's IP and have the proxy forward the real client IP. The edge guard is **on by default**, so this
+applies unless you have explicitly opted out:
+
+```nginx
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+Without it, every request keys to the proxy IP — one global rate-limit/ban bucket shared by all
+clients, so one abuser throttles everyone. The gateway honors the `X-Forwarded-For` chain only from an
+IP named in `GUARD_TRUSTED_PROXIES` (it reads the rightmost entry); a spoofed header from any other
+source is ignored, so it cannot rotate an abuser's budget. See
+[Configuration → Gateway edge protection](/configuration#gateway-edge-protection).
+
+The terminal carries its own Google/Microsoft OAuth login, so the proxy needs no auth of its own.
+
+## No egress
+
+Everything runs inside your perimeter: gateway + services + redis/postgres/minio on your host, the
+[transcription unit](#transcription-the-separate-gpu-unit) on your own GPU or CPU, **BYO inference**,
+recordings in your object storage. A bundled STT unit means the audio path never calls out — the
+posture the regulated verticals ask for.
+
+We have not run an install on a genuinely disconnected network, so we do not claim one: what a
+procurement review can hold us to is self-hosted with no egress, not a certified air gap. On
+**Kubernetes** the chart does not yet expose `TRANSCRIPTION_MODEL` as a value — see
+[No-egress clusters](/deployment-kubernetes#no-egress-clusters).

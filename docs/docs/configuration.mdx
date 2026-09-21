@@ -1,0 +1,329 @@
+---
+title: "Configuration"
+description: "Every environment variable the stack reads — what it does and its default."
+---
+
+Vexa is configured by environment variables, set in `deploy/compose/.env` for Docker Compose (seeded
+from `.env.example` on first `make all`). Defaults below are what the stack falls back to when the
+variable is unset — fine for local evaluation, **not** for anything exposed.
+
+<Warning>
+Change every secret (`ADMIN_TOKEN`, `INTERNAL_API_SECRET`, DB and MinIO credentials,
+`VEXA_DISPATCH_SIGNING_KEY`, `NEXTAUTH_SECRET`) before putting the stack on a network. The defaults
+are public.
+</Warning>
+
+## Transcription (STT)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TRANSCRIPTION_SERVICE_URL` | — | STT service URL, e.g. `http://<gpu-host>:8083`. Give it the **base URL** (canonical) or the full `…/v1/audio/transcriptions` endpoint — every consumer appends the path only when it is missing, so both shapes behave identically. Point it at the bundled service you deploy separately (`deploy/transcription`) or any OpenAI-compatible endpoint. Unset + default `transcribe_enabled=true` → `POST /bots` answers **503** naming the missing keys (not a silent empty transcript). |
+| `TRANSCRIPTION_SERVICE_TOKEN` | — | STT auth token — must match the `API_TOKEN` of your `deploy/transcription` unit, or a token from `vexa.ai/account`. |
+| `TRANSCRIPTION_MODEL` | `whisper-1` | STT model id sent on every transcription request (the OpenAI-compatible `model` field). **Set it when the backend validates model ids** — Groq (`whisper-large-v3-turbo`), OpenAI (`whisper-1` / `gpt-4o-transcribe`), vLLM/LiteLLM (the served name) — or every request fails `model_not_found`. Ignored by the bundled `deploy/transcription` unit, whose model is its own `MODEL_SIZE`. |
+| `TRANSCRIBE_ENABLED` | `true` | Deployment-level default for a spawn's `transcribe_enabled` when `POST /bots` does not say. Resolution: **explicit request body wins** → else this env → else `true`. Set `false` for a deliberately no-STT deployment: bots spawn **capture-only** instead of answering 503. Leaving it **empty means `true`** — only an explicit `false`/`0`/`no`/`off` opts out. |
+| `RECORDING_ENABLED` | `true` | Deployment-level default for a spawn's recording when `POST /bots` does not say. Same empty-means-default rule as above. |
+| `BOT_ALONE_SILENCE_WINDOW_MS` | `600000` | Active-phase remote-audio silence window before the bot leaves with `completed(left_alone)`. Forwarded to spawned bots. A request's `automatic_leave.max_time_left_alone` overrides it. |
+| `BOT_SPEAKER_MIN_AUDIO_SEC` | `2` | Google Meet minimum audio window before submitting to STT. Lower values reduce first-transcript latency but increase request frequency. |
+| `BOT_SPEAKER_SUBMIT_INTERVAL_SEC` | `2` | Google Meet speaker-stream submission interval. |
+| `BOT_SPEAKER_CONFIRM_THRESHOLD` | `2` | Consecutive matching STT results required to confirm a segment. `1` lowers latency but reduces LocalAgreement protection against corrections. |
+| `BOT_SPEAKER_MAX_BUFFER_SEC` | `30` | Maximum buffered Google Meet audio before a forced submission. |
+| `BOT_SPEAKER_IDLE_TIMEOUT_SEC` | `15` | Flush/reset timeout after a speaker stops producing audio. |
+
+The STT service is the **GPU workload, deployed separately** from this stack — see
+[Deployment → Transcription](/deployment#transcription-the-separate-gpu-unit). The main stack
+stays GPU-free and reaches it over the network via the two variables above.
+
+### When the backend is wrong, you learn at configure time
+
+A URL or token that does not work is refused where you set it, not by an empty transcript hours
+later. The same live check runs at three surfaces, and all three name the same cause:
+
+| Surface | What you see |
+|---|---|
+| Setup wizard — **Save & test** | Red with the endpoint's own status: `Token REJECTED by … (HTTP 401)` or `No transcriptions endpoint at … (HTTP 404)`. A green here means a bot will transcribe — the wizard verifies with the exact request a bot's first audio chunk makes. |
+| Boot log + `GET /health` | The `stt` capability row reads `misconfigured` with a `probe.reason`, instead of `configured`. A failing probe warns loudly but never blocks boot. |
+| `POST /bots` | `503` carrying that same reason, **before** any meeting row is written — never a bot that joins and silently transcribes nothing. |
+
+The verdict is cached for 60s, so after fixing the value either wait a minute or call
+`GET /health?force=1` to re-probe immediately.
+
+<Note>
+A `404` from the transcriptions path is treated as a **wrong URL**, not as proof of life: a real
+OpenAI-compatible endpoint answers `400` or `401` to an empty request body and never `404`. Some
+gateways also answer `404` for a rejected credential — the error text names both possibilities.
+</Note>
+
+<Warning>
+**Never put a comment on the same line as a value in `.env`.** Write it on its own line above the
+key. Compose tolerates a trailing `# comment`, but `docker run --env-file` (which Vexa Lite uses)
+does **not** strip it — the comment becomes part of the value, so `TERMINAL_PORT=13000  # the UI`
+sets the port to the literal string `13000  # the UI`.
+</Warning>
+
+## Optional service authority
+
+Stock self-hosted Vexa has no external service authority and continues to admit bots exactly as
+before. Operators who need an independently owned admission/active-service policy can opt into the
+sealed `service-authority.v1` boundary:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VEXA_SERVICE_AUTHORITY_CONFIG` | — | Compact JSON containing a credential-free `url`, `contract_version: "service-authority.v1"`, `timeout_ms`, `response_max_age_seconds`, `failure_policy: "closed"`, and `mode: "enforce"` or `"observe"`. HTTPS is required except for loopback/in-cluster HTTP. |
+| `VEXA_SERVICE_AUTHORITY_SECRET` | — | HMAC-SHA256 secret for the exact timestamped request bytes. Required only when the config is set; keep it in the deployment secret store. |
+| `SERVICE_AUTHORITY_SWEEP_INTERVAL_S` | `15` | Poll cadence for discovering due active-service boundaries. Decisions remain anchored to admitted time plus whole minutes, so changing the poll cadence does not change the billable boundary. |
+
+The request contains service identity, authoritative user ID, service mode, frozen transcription
+provider, concurrency, and lifecycle timestamps. It deliberately contains no email, customer or
+payment-provider identifier, price, balance, transcription endpoint URL, or credential. A
+configured authority that is unavailable, malformed, stale, or bound to another request fails
+closed before a new bot is spawned. During active service, its stop intent is committed before
+runtime teardown and resumed after restart.
+
+`mode: "observe"` records decisions without refusing or stopping service. It is useful for rollout,
+but it is not evidence that a hard service control is enforced. A session admitted in one mode is
+never reinterpreted under another mode after a deployment change.
+
+## Operator terminal callback
+
+An operator can send terminal service facts to one deployment-owned system endpoint. This is
+separate from a user's webhook configuration: the URL is frozen at boot, cannot be supplied by an
+API caller or meeting payload, and receives only `meeting.completed` and `bot.failed`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VEXA_SYSTEM_WEBHOOK_URL` | — | Absolute operator-owned endpoint for terminal `webhook.v1` envelopes. HTTPS is required unless private HTTP is explicitly enabled. URLs with credentials, query strings or fragments are rejected. |
+| `VEXA_SYSTEM_WEBHOOK_SECRET` | — | HMAC-SHA256 secret for the exact timestamped envelope bytes. Required with the URL and stored only in the deployment secret store. |
+| `VEXA_SYSTEM_WEBHOOK_ALLOW_PRIVATE_HTTP` | `false` | Explicitly permits a private/in-cluster HTTP destination such as a billing service on the Compose/Kubernetes network. It does not change customer webhook SSRF protection. |
+| `VEXA_SYSTEM_WEBHOOK_TIMEOUT_S` | `10` | Bounded delivery timeout, greater than zero and at most 60 seconds. |
+
+Transient delivery failures enter a dedicated retry/dead-letter queue and retain the same
+deterministic event ID. Customer webhook destinations continue through DNS/IP validation and cannot
+redirect this operator callback. Leave all four values unset for the stock OSS behavior.
+
+## Secrets & identity
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ADMIN_TOKEN` | none — you must set it | Admin API key (`X-Admin-API-Key`) — mints users and tokens, and signs every per-spawn MeetingToken (meeting-api reads it as `ADMIN_TOKEN`, admin-api as `ADMIN_API_TOKEN`). |
+| `INTERNAL_API_SECRET` | none — you must set it | Shared secret for service-to-service calls. |
+
+Neither has a default any more. Both services **refuse to boot** on a placeholder literal
+(`changeme`, `vexa-internal-secret`, `lite-internal-secret`, `default`, `secret`, …): a value
+published in this repository is not a secret, and a stack running on one comes up green while
+anyone who read the repo can mint an API key for any account. Generate each with
+`openssl rand -hex 32` and set the same `ADMIN_TOKEN` on every service that shares the tier.
+| `VEXA_DISPATCH_SIGNING_KEY` | `dev-dispatch-signing-key` | Signs dispatch tokens (the identity chain of custody). |
+| `NEXTAUTH_SECRET` | `dev-nextauth-secret` | Session secret for the web UI. |
+| `VEXA_BOT_API_KEY` | — | Pre-shared key a bot uses to call back into the stack. |
+
+<Warning>
+**From 0.12.27 the published placeholders are refused at boot.** A service whose
+`INTERNAL_API_SECRET` is one of the strings this repo has printed (`vexa-internal-secret`,
+`changeme`, …) stops at startup naming the variable, instead of running on a secret every reader
+of the source already has. Generate one per deployment before upgrading — `openssl rand -hex 32`
+— and set the same value on every service that talks to another. Vexa Lite mints a fresh random
+one on every boot and needs nothing set.
+</Warning>
+
+## Bot participant name
+
+`DEFAULT_BOT_NAME` on meeting-api names the bot, and compose, Lite and helm ship it as `Vexa`. To
+rename the bot, set it in `.env` (compose/Lite) or `meetingApi.defaultBotName` (helm) and restart
+meeting-api — the terminal needs no rebuild, because it omits `bot_name` when it sends a bot and
+lets the deployment decide. Blank the variable and meeting-api falls back to `VexaBot-{random}`.
+
+Two things still win over it. An explicit `bot_name` in a `POST /bots` request always takes
+precedence, which is also how a calendar connection applies its own per-calendar bot name. And a
+name baked into the terminal image at build time overrides the deployment: pass
+`NEXT_PUBLIC_DEFAULT_BOT_NAME` as a Docker build arg (there is a commented-out line for it under the
+terminal's `build.args` in compose) and rebuild the image — a rename then costs another rebuild,
+which is why the runtime variable is the better knob. Direct `joinMeeting` callers read
+`DEFAULT_BOT_NAME` too and fall back to `Vexa Join Layer`.
+
+## Database & storage
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DB_NAME` / `DB_USER` / `DB_PASSWORD` | `vexa` / `postgres` / `postgres` | Postgres credentials (metadata). |
+| `POSTGRES_HOST_PORT` | `5458` | Host port mapped to Postgres. |
+| `DB_POOL_SIZE` | `5` | SQLAlchemy async-engine `pool_size` — persistent connections **per pod** — read by admin-api and meeting-api and applied to each service's engine. |
+| `DB_MAX_OVERFLOW` | `10` | SQLAlchemy async-engine `max_overflow` — burst connections above `pool_size`, per pod. Ceiling per pod is `pool_size + max_overflow` (default `15`). |
+
+<Note>
+`DB_POOL_SIZE` / `DB_MAX_OVERFLOW` are pure runtime overrides. On managed Postgres with a hard
+`max_connections`, reconcile them with the per-service connection budget in `deploy/db-budget.json`,
+whose accounting is `Σ (replicas × (pool_size + max_overflow)) + reserved ≤ max_connections`.
+The defaults (`5` / `10`) match that budget.
+</Note>
+| `MINIO_ENDPOINT` | `minio:9000` | Object storage endpoint (recordings + workspaces). |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `vexa-access-key` / `vexa-secret-key` | MinIO credentials. |
+| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | `vexa-access-key` / `vexa-secret-key` | MinIO root credentials. |
+| `MINIO_BUCKET` | `vexa` | Bucket holding recordings and agent workspaces. |
+| `MINIO_SECURE` | `false` | Use TLS to reach MinIO. |
+
+## Agent inference (bring your own)
+
+Point the agent at your own model so no inference leaves the network.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VEXA_AGENT_MODEL` | — | Model the agent runner uses. |
+| `VEXA_MEETING_MODEL` | — | Model for meeting-time processing. |
+| `ANTHROPIC_API_KEY` | — | Key for Anthropic-backed runners. |
+| `ANTHROPIC_MODEL` · `ANTHROPIC_DEFAULT_OPUS_MODEL` · `…_SONNET_MODEL` · `…_HAIKU_MODEL` | — | Per-tier model overrides. |
+| `HOST_CLAUDE_CREDENTIALS` | — | Host path to Claude credentials mounted into agent containers (see below). |
+| `VEXA_AGENT_DEFAULT_SUBJECT` | `u_live` | Fallback subject before the gateway fronts agent-api. |
+| `VEXA_ALLOW_LOCAL_REPO_ROOT` | — | `os.pathsep`-separated directories a workspace repo may be attached from as a local path (`POST /agent/workspace/swap`). Unset refuses local paths. |
+
+### Claude subscription credentials (`HOST_CLAUDE_CREDENTIALS`)
+
+Setting `HOST_CLAUDE_CREDENTIALS=~/.claude/.credentials.json` mounts your Claude Code
+sign-in into the agent containers (read-only), so the agent runs on your subscription
+instead of an API key. Whether that file stays valid depends on the host OS:
+
+- **Linux** (and **Windows via WSL2** — run the stack and the `claude` CLI inside WSL):
+  the file is Claude Code's own store; the CLI refreshes it in place. Nothing to do.
+- **macOS**: the CLI's source of truth is the login **Keychain** — the file is a one-time
+  export whose token expires every ~8–12 hours. Symptom: agent chat fails with
+  `401 Invalid authentication credentials` while `claude` works fine in your terminal.
+  Install the bundled sync daemon once:
+
+  ```bash
+  deploy/bin/claude-creds-sync/install.sh
+  ```
+
+  It registers a launchd user agent (`ai.vexa.claude-creds-sync`) that re-exports the
+  Keychain into the file every 5 minutes, write-only-on-change, preserving the inode the
+  containers mount. `install.sh uninstall` removes it. Details:
+  `deploy/bin/claude-creds-sync/README.md`.
+
+The credential-file mount is a single-developer convenience. For a portable setup that
+survives token rotation on any OS, configure an API key or a custom endpoint in
+**Settings → Models** (stored per-user/global in the database) — see the setup wizard or
+the table above.
+
+## Auto-join & calendar sync
+
+Timing knobs for the two meeting-api background sweeps ([auto-join](/core/meetings#auto-join--scheduled-means-the-bot-comes)
+and [calendar sync](/how-to/calendar-sync)). Both degrade gracefully: without `ADMIN_API_URL` +
+`INTERNAL_API_SECRET`, calendar sync no-ops and auto-join spawns without per-user context — the
+stack still boots.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEFAULT_BOT_NAME` | `Vexa` | The bot's display name in the meeting. The terminal omits `bot_name` when it sends a bot, so this names those bots; an explicit `bot_name` still wins. Blank it and meeting-api falls back to `VexaBot-{random}`. |
+| `AUTO_JOIN_SWEEP_INTERVAL_S` | `30` | How often scheduled meetings are checked for a due start. |
+| `AUTO_JOIN_LEAD_S` | `120` | The bot is sent this many seconds *before* the scheduled time, so it is already standing in the lobby when the meeting starts. |
+| `VEXA_LOBBY_BUDGET_S` | `900` | How long a spawned bot waits for admission before giving up (`automatic_leave.waitingRoomTimeout`). The reconciler's pre-active grace derives from this, so raising it never leaves a waiting bot reaped early. |
+| `AUTO_JOIN_GRACE_S` | `600` | A meeting whose start passed longer ago than this is skipped — never joined hours late. |
+| `AUTO_JOIN_RETRY_BACKOFF_S` | `300` | Wait after a loud auto-join failure (cap/quota/spawn) before retrying that meeting. |
+| `CALENDAR_SYNC_INTERVAL_S` | `300` | How often connected ICS feeds are re-fetched and upserted. |
+| `ADMIN_API_URL` | — | admin-api base URL for the sweeps' internal lookups (spawn context, calendar configs). |
+
+## Workflows (flows)
+
+The three flows processes — `flows-api`, `flows-worker` and the optional `flows-mailbox` — are one
+image with three commands and one declaration. These are the keys they boot on; the mail allow-list
+and rate knobs live with the process that reads them, on
+[Operating workflows](/flows/operations).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VEXA_FLOWS_API_KEY` | — | **Required. flows-api refuses to start without it**, and refuses a recognised placeholder (`changeme`, `change-me`, `default`, `secret`) by name. The operator key, sent as `X-Flows-Operator-Key`: it configures the machine and reads or cancels any reaction in the instance. Compose passes it through with no default, on purpose. |
+| `VEXA_FLOWS_TIMELINE_KEY` | — | A second, narrower key that opens `GET /timeline` and nothing else, so the agent worker — which reads the timeline on every dispatch — does not need the operator key in every container. Unset (or a placeholder) means only the operator key opens the route. |
+| `VEXA_FLOWS_DB_URL` | — | Postgres DSN for the ten flows tables. The stack's own database is the expected home. |
+| `VEXA_FLOWS_API_HOST` / `VEXA_FLOWS_API_PORT` | `127.0.0.1` / `18200` | Listener. The compose service sets the host to `0.0.0.0` in its own environment, where the exposure is visible beside the port binding; the host lane keeps loopback. |
+| `VEXA_FLOWS_ADMIN_API_URL` · `VEXA_FLOWS_GATEWAY_URL` | — | The doors flows calls out through. Unnamed, a step that needs one refuses loudly at the moment it would have been used. |
+| `VEXA_FLOWS_AGENT_API_URL` | — | The **optional** agent domain. Unset, steps that need an agent answer `not_present` instead of reaching for a door that is not there. |
+| `VEXA_FLOWS_API_URL` | — | Where admin-api and meeting-api publish facts to. Empty (the stock default) means they publish nothing. Formerly `FLOWS_API_URL`, honoured for one release. |
+| `VEXA_UI_URL` | — | The link port. Unset, nothing is mailed with a link. |
+
+## Images & runtime
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `IMAGE_TAG` | `dev` | Tag for the built service images. |
+| `BROWSER_IMAGE` | `vexaai/vexa-bot:v012` | Browser/bot container the runtime spawns per meeting. **Built from source** (`make bot`), spawned without pulling — the published `vexaai/vexa-bot:dev` is the old 0.10 line and is incompatible. |
+| `AGENT_IMAGE` / `AGENT_WORKER_IMAGE` | `vexaai/v012-agent-*` | Agent container the runtime spawns per dispatch. |
+| `DOCKER_GID` | `0` | Host docker group id, so the runtime can use the Docker socket. |
+| `LOG_LEVEL` | `info` | Log verbosity. |
+
+## Ports
+
+Host ports the compose stack publishes on `127.0.0.1` (override any of them in `.env`):
+
+| Variable | Default | Service |
+|---|---|---|
+| `API_GATEWAY_HOST_PORT` | `18056` | gateway (the one front door) |
+| `ADMIN_API_PORT` | `18057` | admin-api |
+| `MEETING_API_PORT` | `18080` | meeting-api |
+| `RUNTIME_API_PORT` | `18090` | runtime |
+| `AGENT_API_PORT` | `18100` | agent-api |
+| `TERMINAL_PORT` | `13000` | web UI / terminal |
+| `MINIO_HOST_PORT` / `MINIO_CONSOLE_HOST_PORT` | `9000` / `9001` | MinIO API / console |
+
+<Note>
+The gateway (`:18056`) is the one front door; the terminal web workbench is at `:13000`. The other host
+ports above are bound to `127.0.0.1` for local inspection and aren't needed for day-to-day use.
+</Note>
+
+## Gateway edge protection
+
+The gateway carries two independent abuse layers. Both are env-driven; both default sensibly for
+self-hosted and can be left untouched.
+
+### Per-user limiter (post-auth, on by default)
+
+A token-bucket limiter keyed by user id fires *after* the API key is resolved — it catches one token
+driving too much traffic. On by default.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GATEWAY_RATE_LIMIT_DISABLED` | — | `1` / `true` / `yes` / `on` disables the per-user limiter entirely. |
+| `GATEWAY_RATE_LIMIT_BURST` | `120` | Bucket size (max burst). |
+| `GATEWAY_RATE_LIMIT_RPS` | `40` | Refill rate (tokens/sec). High enough for normal use; lower for stricter throttling. |
+
+### Edge guard (pre-auth, off by default)
+
+An optional fastapi-guard edge layer caps requests per **client IP** *before* the API key is validated
+— so an IP flooding invalid keys, or rotating many keys from one IP to defeat the per-user limiter, is
+answered with `429` at the edge and never reaches admin-api. An IP that keeps offending past a threshold
+is **auto-banned for a window**; sustained abuse costs the abuser, not the operator. It is **on by default
+everywhere**: the code default is `GUARD_ENABLED=true`, compose interpolates
+`GUARD_ENABLED=${GUARD_ENABLED:-true}` and ships the opt-out line commented, and the Helm chart sets
+`gateway.guard.enabled: true`. You opt OUT, not in.
+
+<Note>
+`GUARD_ENABLED=false` is the kill switch — set it to turn the whole edge layer off. When
+behind a reverse proxy you must also set `GUARD_TRUSTED_PROXIES`, or every request keys to the proxy
+IP → one global bucket shared by all clients (one abuser throttles everyone). See
+[Deployment → Publishing behind a reverse proxy](/deployment#publishing-behind-a-reverse-proxy).
+</Note>
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GUARD_ENABLED` | `true` (code, compose and Helm) | Kill switch for the entire edge layer. |
+| `GUARD_ENABLE_REDIS` | `true` | Share rate/ban state across processes via the existing `REDIS_URL` (`false` → in-memory only, per-process). |
+| `GUARD_RATE_LIMIT_RPM` | `600` | Per-IP request cap per minute; `0` disables rate limiting. |
+| `GUARD_RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds. |
+| `GUARD_AUTO_BAN_THRESHOLD` | `10` | Over-limit events from one IP before it is auto-banned. |
+| `GUARD_AUTO_BAN_DURATION` | `3600` | Auto-ban window in seconds; after expiry the offender gets a fresh budget. |
+| `GUARD_IP_WHITELIST` | — | CSV of IPs that bypass every guard check. |
+| `GUARD_IP_BLACKLIST` | — | CSV of IPs rejected on the first request (`403`). |
+| `GUARD_BLOCKED_COUNTRIES` | — | CSV of ISO country codes to block (geo, opt-in). |
+| `GUARD_BLOCK_CLOUD_PROVIDERS` | — | CSV of cloud providers to block (e.g. `aws,gcp`), opt-in. |
+| `GUARD_TRUSTED_PROXIES` | — | CSV of trusted proxy IPs whose `X-Forwarded-For` is honored for client-IP resolution. **Set this when behind a reverse proxy.** |
+| `GUARD_TRUST_X_FORWARDED_PROTO` | `false` | Trust `X-Forwarded-Proto` for scheme enforcement. |
+| `GUARD_REDIS_PREFIX` | `vexa:guard:` | Redis key namespace (avoids colliding with Vexa's own keys). |
+| `GUARD_WS_ENABLED` | `false` | Opt-in `/ws` connect guard. In-memory per-process — does **not** share ban/rate state with the Redis-backed HTTP layer, and under `uvicorn --workers N>1` each worker keeps an independent WS ban set. |
+
+<Note>
+With `GUARD_ENABLE_REDIS=false` AND `uvicorn --workers N>1`, the HTTP rate-limit buckets and auto-bans are also per-process: the effective limit becomes `N × GUARD_RATE_LIMIT_RPM` and bans do not propagate across workers (the WS per-process ceiling above applies to the WS path independently). The same applies across multiple gateway **replicas** without Redis — each is its own process.
+
+**Safe configurations:** the shipped gateway runs a **single** uvicorn worker, so the default (`GUARD_ENABLE_REDIS=true`, one worker) enforces the limit globally. If you scale to multiple workers **or** replicas, keep `GUARD_ENABLE_REDIS=true` — Redis-backed state is what shares the buckets and bans across processes. `GUARD_ENABLE_REDIS=false` is only safe with a single worker **and** a single replica; if you must run without Redis at higher concurrency, divide `GUARD_RATE_LIMIT_RPM` by the process count to hold the aggregate cap (note this still will not propagate bans).
+</Note>
+
+The guard fails open (`fail_secure=false`): a guard-check bug or a redis outage returns the request to
+the app rather than taking the gateway down. Request-body WAF scanning is intentionally off — the
+gateway proxies arbitrary user text (chat, meeting `data`, transcript shares), so signature scanning
+would false-positive on legitimate content.

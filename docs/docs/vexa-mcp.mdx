@@ -1,0 +1,112 @@
+---
+title: "MCP server"
+description: "Vexa's meeting capabilities as MCP tools — live on the hosted service, on Kubernetes, and on self-hosted compose."
+---
+
+The MCP server runs as its own service and is fronted by the gateway at `/mcp` on **self-hosted
+Docker Compose from 0.12.18 onward**, on **Kubernetes**, and on the **hosted service** at
+`https://api.cloud.vexa.ai/mcp`.
+
+Verified against the hosted service on 2026-08-18: `initialize` returns
+`Vexa MCP Service (v0.12)` over protocol `2024-11-05`, `tools/list` returns the nine tools below,
+`prompts/list` returns the four prompts, and tool calls carry the caller's own credential through to
+the gateway. That is the end-to-end client proof
+[#888](https://github.com/Vexa-ai/vexa/issues/888) was waiting for.
+
+## What it is
+
+An MCP client — Claude Desktop, an IDE, any MCP-compatible agent — gets Vexa's meeting capabilities
+as standard **MCP tools and prompts**, with no bespoke API integration.
+
+The service is a stateless FastAPI app whose routes *are* the tools. It wraps the **public API
+only**: every tool call forwards the caller's credential to the gateway as `X-API-Key`, and the
+gateway resolves the key and enforces scopes. It holds no credentials, touches no database, and
+never reaches into other services directly.
+
+## Tools
+
+Nine tools, plus four prompts (`vexa.meeting_prep` · `vexa.during_meeting` · `vexa.post_meeting` ·
+`vexa.teams_link_help`).
+
+| Tool | Wraps |
+|---|---|
+| `parse_meeting_link` | pure — URL to platform / `native_meeting_id` / passcode, no gateway hop |
+| `request_meeting_bot` | `POST /bots` (accepts `meeting_url` **or** `native_meeting_id`) |
+| `get_bot_status` | `GET /bots/status` |
+| `update_bot_config` | `PUT /bots/{platform}/{native}/config` |
+| `stop_bot` | `DELETE /bots/{platform}/{native}` |
+| `list_meetings` | `GET /meetings` |
+| `get_meeting_transcript` | `GET /transcripts/{platform}/{native}` |
+| `list_recordings` | `GET /recordings` |
+| `get_recording` | `GET /recordings/{recording_id}` |
+
+`update_bot_config` wraps a route that is not wired in the v0.12 open core and returns `404` — see
+[Meetings API → Manage the bot](/api/meetings#manage-the-bot). The other eight reach live routes.
+
+## Connect a client
+
+Point the client at the **gateway**, not at the MCP service's own port — the gateway is the
+authenticated front door.
+
+**Don't have a key yet?** Hosted: sign in at [vexa.ai/signin](https://vexa.ai/signin) with a Google
+account and copy your key from [your account page](https://vexa.ai/account) — free credit, no card
+required. Self-hosted: `make all` prints a key when the stack comes up.
+
+```json Hosted
+{
+  "mcpServers": {
+    "Vexa": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://api.cloud.vexa.ai/mcp",
+               "--header", "Authorization: Bearer ${VEXA_API_KEY}"]
+    }
+  }
+}
+```
+
+```json Self-hosted compose
+{
+  "mcpServers": {
+    "Vexa": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:18056/mcp",
+               "--header", "Authorization: Bearer ${VEXA_API_KEY}"]
+    }
+  }
+}
+```
+
+Self-hosted compose requires **0.12.18 or later** — that is the release in which the gateway began
+fronting `/mcp`. `18056` is the compose `API_GATEWAY_HOST_PORT`.
+
+The key may arrive as `X-API-Key` or as the MCP transport's `Authorization: Bearer <key>`; both are
+forwarded on. Auth at the edge is fail-closed and identical to every other route
+([Authentication](/authentication)).
+
+<Note>
+The MCP service also publishes a direct host port (`127.0.0.1:18010` by default) for local
+debugging. **It bypasses the gateway, and therefore bypasses authentication.** Do not expose it.
+</Note>
+
+### How the transport is forwarded
+
+The two legs of streamable HTTP are forwarded differently, and the difference is the point
+([#795](https://github.com/Vexa-ai/vexa/issues/795)):
+
+| Leg | What it is | How the gateway forwards it |
+|---|---|---|
+| `POST /mcp` (and `PUT`/`PATCH`/`DELETE`/`OPTIONS`) | a message — short request/response JSON | buffered forward, status and body verbatim |
+| `GET /mcp` | the server-to-client SSE stream: headers, then silence until the server pushes | **relayed unbuffered**, on a dedicated streaming client |
+
+Buffering the `GET` leg is what produced the original failure: the proxy waits on the next body read
+of a healthy-but-silent stream, hits its read timeout, and manufactures a `503` the MCP service
+never sees.
+
+## What is not available
+
+- **Tools blocked on API parity** — these wrap REST routes the public API does not expose yet, and
+  will be ported when the routes land: `delete_recording` · `get_recording_media_download` ·
+  `get_recording_config` / `update_recording_config` · `create_transcript_share_link` ·
+  `update_meeting_data` / `delete_meeting` · `get_meeting_bundle`.
+
+The live status row for this feature is maintained on [Roadmap → Status](/roadmap/status).

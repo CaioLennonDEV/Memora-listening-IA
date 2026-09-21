@@ -1,0 +1,88 @@
+---
+title: "Retrieve a meeting recording"
+description: "List recordings and stream the audio — from your own object storage on a self-host."
+---
+
+<Note>
+Recording retrieval is **API-only today** — the terminal has no built-in player yet. The endpoints below
+are live and covered by service tests. Browser playback and seeking work **through the gateway**: a `Range`
+request returns a `206 Partial Content` with its `Content-Range` and `Accept-Ranges` headers intact.
+See the [capability truth table](/roadmap/status#capability-truth-table).
+</Note>
+
+Alongside the diarized transcript, each meeting's **audio recording** is uploaded to object storage — on a
+self-host, your own MinIO bucket, so it never leaves your environment. The recording is the meeting audio,
+stored separately from the transcript (speaker separation lives in the transcript as text — there is no
+per-speaker audio).
+
+**Don't have a key yet?** Hosted: sign in at [vexa.ai/signin](https://vexa.ai/signin) with a Google
+account and copy your key from [your account page](https://vexa.ai/account) — free credit, no card
+required. Self-hosted: `make all` prints a key when the stack comes up.
+
+## List recordings
+
+```bash
+curl -H "X-API-Key: $API_KEY" "$API_BASE/recordings"
+```
+
+Get the detail for one:
+
+```bash
+curl -H "X-API-Key: $API_KEY" "$API_BASE/recordings/42"
+```
+
+## Get the playable audio
+
+Resolve the master metadata (finalize-on-read), which points at the raw byte stream:
+
+```bash
+curl -H "X-API-Key: $API_KEY" "$API_BASE/recordings/42/master?type=audio"
+```
+
+The response carries a `raw_url` of the form
+`GET /recordings/{recording_id}/media/{media_file_id}/raw` — the actual audio bytes the player loads:
+
+```bash
+curl -H "X-API-Key: $API_KEY" \
+  "$API_BASE/recordings/42/media/<media_file_id>/raw" -o meeting-42.audio
+```
+
+### Range requests (playback and seek)
+
+The `/raw` endpoint honours HTTP `Range` — a partial request returns `206 Partial Content` carrying
+`Content-Range` and `Accept-Ranges: bytes`, **preserved through the gateway** front door. This is what
+lets a browser `<audio>`/`<video>` element stream and seek the recording instead of aborting the fetch:
+
+```bash
+curl -I -H "X-API-Key: $API_KEY" -H "Range: bytes=0-1023" \
+  "$API_BASE/recordings/42/media/<media_file_id>/raw?type=audio"
+# HTTP/1.1 206 Partial Content
+# Accept-Ranges: bytes
+# Content-Range: bytes 0-1023/<total>
+```
+
+## Where it's stored
+
+Recordings live in the bucket configured by `MINIO_*` ([Configuration](/configuration#database-storage)).
+On a self-host that's infrastructure you control; a no-egress deployment keeps recordings entirely in-VPC.
+
+## Delete a recording
+
+```bash
+curl -X DELETE -H "X-API-Key: $API_KEY" "$API_BASE/recordings/42"
+```
+
+After the meeting becomes terminal, the owner-scoped delete removes the recording's chunks and
+master from configured primary object storage before removing its metadata (`409` while the meeting
+is still in flight). A storage error leaves the metadata intact so you can safely retry. To erase a
+completed meeting's transcript and every recording together, use
+`DELETE /meetings/{meeting_id}`.
+
+Deletion does not promise immediate removal from database snapshots, object-store version history,
+or backups. Those copies expire according to the retention policy of the deployment operator.
+
+<Note>
+A recording is the raw meeting audio. For the **text** of who-said-what with timestamps, use the
+[transcript](/how-to/send-a-bot#2-read-the-transcript) — see the
+[Meetings API](/api/meetings#speaker-attributed-transcripts).
+</Note>

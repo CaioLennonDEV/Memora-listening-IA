@@ -1,0 +1,190 @@
+# pr-value — the per-PR AUTONOMOUS VALUE LEG (the live row of the TAKE bundle, machine-presented).
+#
+# gates.yml proves the PR is architecturally sound (L1/L2: isolation, contracts, unit green).
+# This workflow proves the PR's tree still DELIVERS: the real compose stack comes up from the
+# PR's own code and a contract-faithful bot drives the full product FSM through the real
+# backend — join lifecycle, failure attribution, transcript-segment emission, concurrent bots,
+# acts round-trip (the MOCK_BOT scenario suite, deploy/compose/tests/mock_scenarios_test.py).
+#
+# Why the mock bot is the right instrument here: it reuses the REAL orchestrator and the REAL
+# lifecycle/transcript/acts adapters — only join + audio capture are faked (mock/README.md).
+# So every backend-visible behavior is prod-identical, no browser/STT/GPU needed, and the leg
+# runs anywhere in ~10-15 min. What it CANNOT see (real Meet admission, real audio → words)
+# stays at the release bar (release-validate + the eval lane), stated honestly in delivery.mdx.
+#
+# TAKE step 2 consumes this run: a green pr-value IS the "live leg" row of the acceptance map
+# for backend-visible behavior — contributors no longer hand-assemble that row. The scenario
+# table lands in the job summary as the machine-presented bundle fragment.
+#
+# Scope guard: runs only when runtime surfaces change (path filter). Docs/governance/workflow
+# -only PRs skip it entirely — gates.yml remains their only required machinery.
+name: pr-value
+
+on:
+  pull_request:
+    paths:
+      - "core/**"
+      - "clients/terminal/**"
+      - "deploy/compose/**"
+      - "deploy/lite/**"
+      - "libs/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  # Backfill mode: validate an ALREADY-OPEN PR (the queue that predates this workflow) without
+  # waiting for the contributor to push. Checks out the PR's MERGE ref (their change on top of
+  # current main — the thing that would actually land). SECURITY: this mode runs untrusted PR
+  # code; the job uses NO secrets (no registry login — anonymous pulls), so there is nothing
+  # to exfiltrate beyond the read-only GITHUB_TOKEN.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Open PR number to validate (checks out refs/pull/<pr>/merge)"
+        required: true
+        type: string
+
+# a superseded run's verdict is worthless — cancel it
+concurrency:
+  group: pr-value-${{ inputs.pr || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The value FSM through the real backend, built from the PR's tree.
+  value-fsm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # pull_request event → default (the PR merge ref). dispatch → the named PR's merge ref.
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+      - uses: jlumbroso/free-disk-space@v1.3.1
+      - uses: astral-sh/setup-uv@v5
+      # agent-api reads deploy/compose/.env via env_file (single source of truth) — it must exist.
+      - name: Seed compose .env
+        run: bash deploy/compose/mint-dev-env.sh   # seeds .env and mints the keys the stack refuses to run without (0.12.27)
+      - name: Build the mock bot (local instrument image, never published)
+        run: docker build -f core/meetings/services/bot/Dockerfile.mock -t mock-bot:dev .
+      # No COMPOSE_NO_BUILD: the stack builds FROM THIS PR's TREE — that is the point.
+      # The stack fixture's `up -d --build` proves the PR's images assemble and come healthy;
+      # the scenario suite then proves the product FSM end to end on them.
+      - name: Value scenarios on the PR's stack (MOCK_BOT suite + always-on subset)
+        working-directory: deploy/compose
+        env:
+          MOCK_BOT: "1"
+          BROWSER_IMAGE: mock-bot:dev
+          COMPOSE_DYNAMIC_PORTS: "1"
+          # registry build-cache overlay: untouched services become cache hits (~7 min → ~2)
+          COMPOSE_EXTRA_FILES: ${{ github.workspace }}/deploy/compose/docker-compose.ci-cache.yml
+        run: ./bin/stack-test
+      - name: Present the machine bundle (job summary)
+        if: always()
+        run: |
+          {
+            echo "## pr-value — machine-presented live-leg row (TAKE step 2)"
+            echo
+            echo "PR: \`${{ inputs.pr || github.event.pull_request.number }}\` · stack built from \`${{ github.event.pull_request.head.sha || 'merge ref (dispatch backfill)' }}\`;"
+            echo "scenario suite: \`deploy/compose/tests/mock_scenarios_test.py\`"
+            echo "(lifecycle FSM · failure attribution · join-timeout · segment emission ·"
+            echo "immediate-stop · max-bots · speak-ack · canaccess-deny) + always-on stack subset."
+            echo
+            echo "Verdict: **${{ job.status }}** — a green run is the live-leg evidence row for"
+            echo "backend-visible behavior. Real-Meet admission and audio→words remain release-bar"
+            echo "legs (release-validate + eval lane) and are NOT claimed by this check."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Compose state on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker compose -p vexa-compose-gate -f deploy/compose/docker-compose.yml logs --no-color --tail 200 || true
+
+  # The LITE boot leg (#581). Lite builds and boots ONLY at release time, so three lite-only
+  # bugs (the Dockerfile.lite stale brick filter #576, the Makefile $IMG-orphaned-by-comment,
+  # the #585 stream-authz misconfig) each cost a full failed release pipeline (~35 min) to
+  # surface. This job closes that gap per PR: build deploy/lite/Dockerfile.lite from the PR's
+  # own tree, `make -C deploy/lite up` from that exact image, probe the front doors, then the
+  # concurrent-bots smoke (the #478 class + the #585 stream-authz guard).
+  #
+  # Scope: only when the lite bundle's inputs change — deploy/lite/** (Dockerfile + Makefile +
+  # launchers + supervisor conf) or core/** (the bot/service source the image bakes) or the
+  # workspace manifests. clients/terminal is deliberately OUT: the terminal has its own image
+  # leg, and a terminal-only PR should not pay a lite build. Job-level path scoping is a git
+  # diff against the merge ref's first parent (main) — no extra action, works identically for
+  # the dispatch backfill mode. Fail-open: if the diff cannot be computed, the leg runs.
+  #
+  # NO secrets (like value-fsm): base images and the vexaai/vexa-lite:buildcache registry cache
+  # are pulled anonymously — warm-cache runs land in single-digit minutes; a cold cache is the
+  # 45-min ceiling, never a wrong verdict.
+  lite-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          fetch-depth: 2   # merge commit + both parents → HEAD^1 (main) is diffable
+      - name: Scope — does this PR touch the lite bundle?
+        id: scope
+        run: |
+          if files=$(git diff --name-only HEAD^1 HEAD 2>/dev/null); then
+            if echo "$files" | grep -qE '^(deploy/lite/|core/|package\.json$|pnpm-lock\.yaml$)'; then
+              echo "hit=1" >> "$GITHUB_OUTPUT"; echo "lite bundle inputs changed — running the leg"
+            else
+              echo "hit=0" >> "$GITHUB_OUTPUT"; echo "no lite bundle inputs changed — skipping"
+            fi
+          else
+            echo "hit=1" >> "$GITHUB_OUTPUT"; echo "could not diff — failing open, running the leg"
+          fi
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        if: steps.scope.outputs.hit == '1'
+      - uses: docker/setup-buildx-action@v3
+        if: steps.scope.outputs.hit == '1'
+      # Build the PR's OWN lite image (A3: the PR tree, anonymous pulls, no cache-to — read-only
+      # cache use). The tag is the Makefile's LOCAL_TAG: `make up` prefers a local vexa-lite:dev
+      # over the Hub image, so the stack below boots exactly what this PR would ship.
+      - name: Build deploy/lite/Dockerfile.lite from the PR tree
+        if: steps.scope.outputs.hit == '1'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/lite/Dockerfile.lite
+          load: true
+          tags: vexa-lite:dev
+          cache-from: type=registry,ref=vexaai/vexa-lite:buildcache
+      - name: Seed the lite .env
+        if: steps.scope.outputs.hit == '1'
+        run: printf 'ADMIN_TOKEN=ci-admin-token\nTRANSCRIPTION_SERVICE_URL=\nTRANSCRIPTION_SERVICE_TOKEN=\n' > .env
+      - name: Bring lite up from the PR-built image
+        if: steps.scope.outputs.hit == '1'
+        run: make -C deploy/lite up init-db
+      - name: Probe the front doors (make test exits non-zero on failure)
+        if: steps.scope.outputs.hit == '1'
+        run: |
+          for i in $(seq 1 10); do
+            make -C deploy/lite test && exit 0
+            echo "…front doors not all up yet (attempt $i/10)"; sleep 15
+          done
+          echo "::error ::lite front-door probes failed after 10 attempts"
+          exit 1
+      - name: Concurrent-bots smoke (the #478 class + the #585 stream-authz guard)
+        if: steps.scope.outputs.hit == '1'
+        run: ADMIN_TOKEN=ci-admin-token deploy/lite/tests/concurrent-bots.sh
+      - name: Present the lite-leg row (job summary)
+        if: always() && steps.scope.outputs.hit == '1'
+        run: |
+          {
+            echo "## pr-value/lite-smoke — the lite boot leg (#581)"
+            echo
+            echo "Built \`deploy/lite/Dockerfile.lite\` from this PR's tree, booted it via"
+            echo "\`make -C deploy/lite up\`, probed the front doors, ran the concurrent-bots smoke."
+            echo
+            echo "Verdict: **${{ job.status }}** — green means the lite image assembles and boots"
+            echo "from THIS tree. Real-Meet admission and audio→words remain release-bar legs."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Lite state on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs vexa-lite --tail 300 || true

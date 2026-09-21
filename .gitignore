@@ -1,0 +1,46 @@
+node_modules/
+dist/
+.turbo/
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+!**/.env.example
+.recordings/
+deploy/execution-targets.json
+# local test/debug artifacts (Playwright MCP screenshots + snapshots). The rule was added AFTER a
+# June 2026 session had already committed 17 page dumps of the hosted dashboard; those were removed
+# in 0.12.27. An ignore rule never untracks what is already tracked — check `git ls-files` too.
+.playwright-mcp/
+/*.png
+# local Claude Code settings + worktrees (per-machine, never committed)
+.claude/
+# generated architecture perspectives (regenerate: pnpm arch:viz) — keep the README, ignore the SVGs
+docs/views/*
+!docs/views/README.md
+# the concise DSL projection IS committed — it's the always-in-context LLM index (gate:dataflow keeps it current)
+!docs/views/architecture.dsl
+# the Mermaid views are committed too — deterministic projections of the chart (pnpm arch:dsl --write; gate:dataflow checks staleness)
+!docs/views/*.mmd
+
+# transcription service downloaded model weights (runtime cache)
+deploy/transcription/models/
+
+# MinIO host bind-mount data (local object-store bytes; keep the placeholder)
+deploy/compose/data/minio/**
+!deploy/compose/data/minio/.gitkeep
+
+# Local corporate / DPI-SSL CAs (never commit private interceptor CAs)
+deploy/compose/certs/**
+!deploy/compose/certs/.gitkeep
+# Exported Windows CA dumps dropped at the repo root
+/*.cer
+/*.CER
+
+# Release working handoff notes are local-only (per-version); witness.json stays tracked.
+releases/*/HANDOFF.md

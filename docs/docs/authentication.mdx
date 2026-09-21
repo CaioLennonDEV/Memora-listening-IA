@@ -1,0 +1,120 @@
+---
+title: "Authentication"
+description: "Mint an API key, send it on every request, scope it, and rotate it."
+---
+
+Every public request carries an API key in the **`X-API-Key`** header. The gateway resolves the key
+to a user and injects identity downstream — you never pass a user id or subject yourself; the server
+derives it from the key.
+
+```bash
+-H "X-API-Key: <API_KEY>"
+```
+
+## Base URL
+
+| Deployment | API base |
+|---|---|
+| Self-hosted (`make all` / compose) | `http://localhost:18056` (`API_GATEWAY_HOST_PORT`) |
+| Hosted | `https://api.cloud.vexa.ai` |
+
+## Getting a key
+
+**Don't have a key yet?** Hosted: sign in at [vexa.ai/signin](https://vexa.ai/signin) with a Google
+account and copy your key from [your account page](https://vexa.ai/account) — free credit, no card
+required. Self-hosted: `make all` prints a key when the stack comes up.
+
+`make all` mints a key as part of bring-up and **prints it** (along with the service URLs) when the
+stack is ready — copy it from the `make all` output and use it as your `X-API-Key`.
+
+### Minting more keys
+
+To mint additional keys, use the `provision-token` make target with your `ADMIN_TOKEN` (it's set in
+`.env`, default `dev-admin-token` — **change it before exposing anything**):
+
+```bash
+make -s provision-token ADMIN_TOKEN=dev-admin-token
+# → prints a freshly minted vxa_... API key
+```
+
+Under the hood the **admin API** mints keys. It listens on `http://localhost:18057` by default
+(`ADMIN_API_PORT`) and is protected by `ADMIN_TOKEN` via the `X-Admin-API-Key` header — you can call it
+directly for finer control over users and scopes:
+
+```bash
+export ADMIN=http://localhost:18057
+export ADMIN_TOKEN=dev-admin-token        # your ADMIN_TOKEN from .env
+
+# 1. create (or find) a user
+curl -X POST "$ADMIN/admin/users" \
+  -H "X-Admin-API-Key: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"email":"jane@acme.com","name":"Jane","max_concurrent_bots":2}'
+# → {"id":1,"email":"jane@acme.com","name":"Jane","max_concurrent_bots":2}
+
+# 2. mint a key for that user id (JSON body preferred)
+curl -X POST "$ADMIN/admin/users/1/tokens" \
+  -H "X-Admin-API-Key: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"scopes":["bot","tx"]}'
+# → {"id":7,"token":"vxa_bot_...","user_id":1,"scopes":["bot","tx"]}
+
+# query form still works: ?scopes=bot,tx or ?scope=bot
+```
+
+The returned `token` is your `X-API-Key`. **It is shown once** — store it.
+
+## Scopes
+
+A key carries one or more scopes. Pass them in the JSON body as `{"scopes":["bot","tx"]}`, or as
+query `scope=<one>` / `scopes=<a>,<b>`. The body wins when both are present. An unknown body field
+is refused with `422` — never silently dropped.
+
+| Scope | Grants |
+|---|---|
+| `bot` | bot lifecycle — `POST`/`GET`/`DELETE /bots`, `/bots/status`, bot config — and the calendar connections (`/user/calendar`, `/user/calendars/*`), because an auto-join feed spawns bots |
+| `tx` | the transcript and meeting-record plane — `/meetings*`, `/transcripts/*` |
+| `browser` | browser-tool capabilities. **Reaches no API route today** — a browser-only key can call [`/auth/me`](/api/settings#identity) and nothing else |
+
+`/recordings*`, `/user/webhook*`, `/user/models`, `/user/transcription`, `/agent/*` and `/mcp` accept
+either `bot` or `tx`. Most keys want both: `{"scopes":["bot","tx"]}`. The three `/user/*` routes in
+that list are the [Settings API](/api/settings) — model credentials, transcription backend, and
+webhook delivery, stored per key owner.
+
+Every route requires a scope. A key that holds none of the scopes a route accepts gets `403`,
+whichever route it is.
+
+Keys are prefixed by their primary scope — `vxa_bot_…`, `vxa_tx_…`, `vxa_browser_…`. A key without a
+recognized scope is rejected.
+
+## Rotating and revoking
+
+Mint a new key, switch your clients over, then delete the old one by its token id:
+
+```bash
+curl -X DELETE "$ADMIN/admin/tokens/7" -H "X-Admin-API-Key: $ADMIN_TOKEN"   # → 204
+```
+
+Set an expiry at mint time with `expires_in=<seconds>`; expired keys are rejected automatically.
+
+### Login-minted tokens (`terminal-login`)
+
+When a user signs in through the terminal (OAuth or email login), the terminal mints an API token
+named **`terminal-login`** to populate the auth cookie. These are **bounded per user**: after each
+sign-in the terminal keeps only the newest `VEXA_TERMINAL_LOGIN_TOKEN_CAP` (default `3`) and revokes
+the older ones. So when you audit a user's tokens —
+
+```bash
+curl "$ADMIN/admin/users/1/tokens" -H "X-Admin-API-Key: $ADMIN_TOKEN"
+```
+
+— the `terminal-login`-named entries are login sessions (capped, not unbounded), while any
+differently-named entries are self-serve keys the user minted and are never pruned by login.
+
+## What can go wrong
+
+| Status | `detail` | Meaning |
+|---|---|---|
+| `401` | `Missing API key` | no `X-API-Key` header |
+| `401` | `Invalid API key` | unknown or revoked key |
+| `403` | `Insufficient scope for this endpoint` | key lacks the scope this route needs |
+
+See the full [error reference](/api/errors).

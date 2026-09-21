@@ -1,0 +1,207 @@
+{
+  "$id": "https://vexa.ai/contracts/config.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "config.v1",
+  "description": "The per-service deployment-config declaration: every environment key a service consumes, classed as required-explicit (boot fails loud if unset), defaulted (the code default, documented), publish-edge (the address of another domain this service HANDS FACTS TO, fire-and-forget — never a value it needs), or capability (a named optional capability whose tri-state — configured / not_configured / misconfigured — is computed from the env, optionally live-probed, exposed on /health, and consulted by capability-gated endpoints). The declaration is the SSOT the deploy surfaces (compose / helm / lite) and the boot preflight are checked against (gate:config-contract).",
+  "type": "object",
+  "required": ["contract", "service", "keys"],
+  "additionalProperties": false,
+  "properties": {
+    "contract": { "const": "config.v1" },
+    "service": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "The adopting service's name (compose service / helm component / lite program)."
+    },
+    "keys": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/KeyDeclaration" },
+      "description": "Every environment key this service reads (or brokers), one declaration each."
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/Capability" },
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "description": "The named optional capabilities the `capability`-classed keys group into."
+    },
+    "surface_only": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SurfaceOnlyKey" },
+      "description": "Keys a deploy surface sets on this service that the service does NOT read — documented drift (each entry names why it is still there), so the surface↔declaration check stays honest without silently ignoring anything."
+    }
+  },
+  "$defs": {
+    "Target": {
+      "enum": ["compose", "helm", "lite"],
+      "description": "A deploy surface: deploy/compose (docker-compose.yml + .env.example), deploy/helm (chart templates/values), deploy/lite (entrypoint.sh + supervisord.conf)."
+    },
+    "KeyDeclaration": {
+      "type": "object",
+      "required": ["key", "class", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "class": {
+          "enum": ["required-explicit", "defaulted", "publish-edge", "capability"],
+          "description": "required-explicit: unset/empty ⇒ the boot preflight raises and the deploy refuses to start. defaulted: the documented code default applies when unset. publish-edge: the key addresses (or authenticates to) another domain this service PUBLISHES facts to — see `publishes_events`; unset means that domain is not deployed here, the facts are dropped, and nothing else changes. capability: the key belongs to the named capability; the service runs either way and the capability's tri-state is computed from the env."
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "default": {
+          "type": "string",
+          "description": "The effective default when unset (required for class=defaulted; may describe a derivation, e.g. \"(derived from AGENT_IMAGE)\")."
+        },
+        "capability": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "The capability this key belongs to (required for class=capability; must name an entry in `capabilities`)."
+        },
+        "publishes_events": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$" },
+          "uniqueItems": true,
+          "minItems": 1,
+          "description": "The carriers this service hands over this edge (required for class=publish-edge; each must be registered in core/flows/contracts/flows.v1/carriers.json, owned by THIS service's domain — gate:config-contract checks both). A PUBLISH EDGE IS NOT A DEPENDENCY, and this field is where the difference is written down: a dependency is a call whose answer the caller needs, a publish is a fact handed over best-effort and swallowed. Without the distinction the only declaration available for a publish target is one of the classes meaning `this service needs this value`, so the sanctioned way for two domains to couple would fail the very gate that exists to keep them apart, and the only way to satisfy it would be to stop telling anyone anything."
+        },
+        "secret": {
+          "type": "boolean",
+          "description": "The value is a credential (P14): never logged, never in goldens; deploy surfaces feed it from a secret store."
+        },
+        "targets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Target" },
+          "uniqueItems": true,
+          "description": "Which deploy surfaces plumb this key (default: all three). An EMPTY array = an in-code dial deliberately not exposed by any deploy surface (still declared, so the undeclared-read scan stays tight)."
+        },
+        "forbidden_values": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "minItems": 1,
+          "description": "Values this key must NEVER hold in a running deploy — the published placeholder literals a stock compose/helm/lite once supplied. The boot preflight raises ConfigError on a match, so a deployment nobody configured refuses to start instead of coming up green holding a secret every reader of this repository knows (F95: INTERNAL_API_SECRET shipped as `vexa-internal-secret`, the exact value the internal tier compared against). Compared on the stripped value; the refusal names the KEY, never the value."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "class": { "const": "defaulted" } }, "required": ["class"] },
+          "then": { "required": ["default"] }
+        },
+        {
+          "if": { "properties": { "class": { "const": "capability" } }, "required": ["class"] },
+          "then": { "required": ["capability"] }
+        },
+        {
+          "if": { "properties": { "class": { "const": "required-explicit" } }, "required": ["class"] },
+          "then": { "not": { "required": ["default"] } }
+        },
+        {
+          "if": { "properties": { "class": { "const": "publish-edge" } }, "required": ["class"] },
+          "then": { "required": ["publishes_events"], "not": { "required": ["default"] } }
+        },
+        {
+          "$comment": "The field is the class's whole content, so it may not be worn by a class that means `this service needs this value` — which is exactly how a publish edge gets quietly re-read as a dependency.",
+          "if": { "required": ["publishes_events"] },
+          "then": { "properties": { "class": { "const": "publish-edge" } } }
+        }
+      ]
+    },
+    "Capability": {
+      "type": "object",
+      "required": ["description", "when_unconfigured"],
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "mode": {
+          "enum": ["all", "any"],
+          "description": "all (default): configured ⇔ every member key set; SOME-but-not-all set ⇒ misconfigured. any: configured ⇔ at least one member key set (alternative credential paths); env-only state is never misconfigured (a probe can still demote to misconfigured)."
+        },
+        "when_unconfigured": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The observable degraded behavior: what capability-gated endpoints answer (the typed, actionable error) when the capability is not configured."
+        },
+        "probe": { "$ref": "#/$defs/Probe" }
+      }
+    },
+    "Probe": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "description": "A cheap LIVE verification that set values actually WORK — so set-but-failing credentials show as `misconfigured` on /health BEFORE any workload runs (the silent-401 STT incident). Probes run only when the env-level state is already `configured`; they execute at boot (logged, never boot-blocking) and lazily on /health when the cached result is older than `ttl_s`. A probe failure demotes the /health row to `misconfigured` with a reason; it never changes the service's own `status`.",
+      "properties": {
+        "kind": { "enum": ["http", "file"] },
+        "timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Per-attempt budget (default 2s — must stay under the deploy healthcheck timeout)."
+        },
+        "ttl_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Cache lifetime (default 60s): /health refreshes the probe at most this often."
+        },
+        "http": {
+          "type": "object",
+          "required": ["url_key"],
+          "additionalProperties": false,
+          "description": "One authenticated request to the capability's endpoint. Verdict, in order: a network failure/timeout ⇒ probe FAILS (unreachable); an `unauthorized_statuses` answer ⇒ FAILS (the credential was REJECTED); an `exhausted_statuses` answer ⇒ FAILS (the credential is authentic but cannot buy the work); an `invalid_statuses` answer ⇒ FAILS (we are not talking to the declared endpoint at all — the URL shape is wrong); ANY other status (400/405/…) proves the endpoint is reachable and the credential accepted ⇒ probe passes.",
+          "properties": {
+            "method": { "type": "string", "default": "POST" },
+            "url_key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "the declared key holding the endpoint URL — accepted as a bare base (https://host) OR as the full endpoint already carrying `path`; the probe appends `path` only when absent, the same rule the bot's client and the terminal dictation route apply" },
+            "path": { "type": "string", "description": "the capability's endpoint path (e.g. /v1/audio/transcriptions), appended to the configured URL only when it does not already end with it" },
+            "auth_key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "the declared key holding the bearer token sent as Authorization" },
+            "unauthorized_statuses": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "description": "statuses that mean the credential was REJECTED (default [401, 403])"
+            },
+            "invalid_statuses": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "description": "statuses that mean the URL does not name this capability's endpoint — proof of the WRONG address, not of a working one (default []; the stt transcriptions probe declares [404], since a real OpenAI-compatible transcriptions path answers 400/401 to an empty body and never 404)"
+            },
+            "exhausted_statuses": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "description": "statuses that mean the credential AUTHENTICATED but cannot pay for the work — a metered backend's 402 (default []; the stt probe declares [402]). Distinct from unauthorized: nothing is wrong with the token, it simply buys nothing, so every request fails while every reachability check passes. Only meaningful with `payload: \"audio\"` — an endpoint cannot price a body it never received."
+            },
+            "payload": {
+              "enum": ["audio"],
+              "description": "send a REAL request body instead of an empty POST. `audio` posts a ~1s WAV as multipart/form-data — the same shape a bot's first chunk makes — because an empty body cannot distinguish a funded credential from a worthless one: a metered backend answers both alike. It also makes the verdict independent of WHOSE token it is (a billing-exempt account and a funded one both answer 200), so no account identity is encoded anywhere. The request is METERED — declare a long `ttl_s`."
+            },
+            "payload_model": {
+              "type": "string",
+              "description": "the `model` form field sent with `payload: \"audio\"` (default whisper-1); backends that validate model ids need their served name"
+            }
+          }
+        },
+        "file": {
+          "type": "object",
+          "required": ["path_key"],
+          "additionalProperties": false,
+          "description": "Verifies a credentials FILE as visible to THIS service. Skipped (not failed) when `path_key` is unset — e.g. a mode:any capability satisfied by an API key instead. Verdict: a regular, readable, non-empty JSON file ⇒ passes; a DIRECTORY (docker's bind-mount of a missing host path), unreadable, or non-JSON content ⇒ FAILS (misconfigured). `fallback_paths` lets a containerized service check a mirror mount of a docker-HOST path it cannot see directly.",
+          "properties": {
+            "path_key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "the declared key holding the path (HOST-path semantics documented on the key)" },
+            "fallback_paths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "in-container mirror locations checked when the key's own path is not visible locally"
+            }
+          }
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "http" } } }, "then": { "required": ["http"] } },
+        { "if": { "properties": { "kind": { "const": "file" } } }, "then": { "required": ["file"] } }
+      ]
+    },
+    "SurfaceOnlyKey": {
+      "type": "object",
+      "required": ["key", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

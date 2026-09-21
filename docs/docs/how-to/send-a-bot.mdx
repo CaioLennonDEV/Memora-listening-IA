@@ -1,0 +1,246 @@
+---
+title: "Send a bot and get a transcript"
+description: "Send a bot to a Google Meet, Zoom, Teams, or Jitsi call and get a real-time transcript — hosted in one API call, or self-hosted under Apache-2.0."
+---
+
+A Vexa bot joins a call like any participant and streams back a **speaker-attributed** transcript. No
+plugin, no host configuration.
+
+## Get an API key
+
+There are two ways to run Vexa. Both speak the same API; only the base URL differs.
+
+### Hosted
+
+1. Sign in at [vexa.ai/signin](https://vexa.ai/signin) with a Google account.
+2. Copy your API key from [your account page](https://vexa.ai/account).
+3. Send a bot:
+
+```bash
+curl -X POST "https://api.cloud.vexa.ai/bots" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"platform":"google_meet","native_meeting_id":"abc-defg-hij","bot_name":"Vexa"}'
+```
+
+`native_meeting_id` is the id inside the join URL — `abc-defg-hij` in
+`https://meet.google.com/abc-defg-hij`.
+
+New accounts get **$5 of free bot credit and no credit card is required** — about 16 hours of bot
+time at $0.30/hr ([pricing](https://vexa.ai/pricing)).
+
+### Self-hosted
+
+Vexa is Apache-2.0 and runs entirely inside your own perimeter. `make all` pulls the published
+images and prints an API key when the stack is up:
+
+```bash
+git clone https://github.com/Vexa-ai/vexa.git && cd vexa
+make all
+```
+
+Full walkthrough: [Quickstart](/quickstart). Base URLs, scopes, and key rotation:
+[Authentication](/authentication).
+
+### Set your base URL
+
+The rest of this page uses `$API_BASE` and `$API_KEY`:
+
+| Deployment | `API_BASE` |
+|---|---|
+| Hosted | `https://api.cloud.vexa.ai` |
+| Self-hosted (`make all` / compose) | `http://localhost:18056` |
+
+## 1. Send the bot
+
+The only thing that changes between platforms is the `platform` value.
+
+<Tabs>
+  <Tab title="Google Meet">
+    ```bash
+    curl -X POST "$API_BASE/bots" \
+      -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+      -d '{"platform":"google_meet","native_meeting_id":"abc-defg-hij","bot_name":"Vexa"}'
+    ```
+  </Tab>
+  <Tab title="Zoom">
+    ```bash
+    curl -X POST "$API_BASE/bots" \
+      -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+      -d '{"platform":"zoom","native_meeting_id":"81234567890","bot_name":"Vexa"}'
+    ```
+
+    Zoom joins via the **web client** in 0.12.x; the native SDK / OBF-token path is not
+    carried and returns with the Zoom track — see [Roadmap → Status](/roadmap/status).
+  </Tab>
+  <Tab title="Microsoft Teams">
+    ```bash
+    # the meeting ID and its passcode, as Teams shows them in the invite
+    curl -X POST "$API_BASE/bots" \
+      -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+      -d '{"platform":"teams","native_meeting_id":"397421056486982","passcode":"X8hcQVTnGNpGelJLSv","bot_name":"Vexa"}'
+    ```
+
+    Teams meetings come addressed two ways, and both are valid `native_meeting_id`s:
+
+    - the **numeric meeting ID** (10–15 digits) Teams prints next to a **passcode** — pass the
+      passcode in `passcode`, never glued onto the id;
+    - the **thread id** out of a classic `…/l/meetup-join/19:meeting_…@thread.v2` link, which
+      carries its own credential and takes no separate passcode.
+
+    On a non-default Teams cloud — `teams.live.com` for personal meetings, `gov.` / `dod.`
+    `teams.microsoft.us` for GCC-High and DoD — add `teams_base_host`, or the bot builds its URL
+    on the world-wide host and joins a different Teams. Sending the full `meeting_url` instead
+    settles both the host and the passcode on its own.
+  </Tab>
+  <Tab title="Jitsi Meet">
+    Jitsi is **join + capture offline-proven; live validation pending** — Meet, Zoom and Teams are
+    production. See [#883](https://github.com/Vexa-ai/vexa/issues/883).
+
+    ```bash
+    # the room name is the id; meeting_url is REQUIRED — a room name is scoped to a
+    # deployment (meet.jit.si or your self-hosted instance), so the URL says which one
+    curl -X POST "$API_BASE/bots" \
+      -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+      -d '{"platform":"jitsi","native_meeting_id":"MyRoom","meeting_url":"https://meet.jit.si/MyRoom","bot_name":"Vexa"}'
+    ```
+  </Tab>
+</Tabs>
+
+`native_meeting_id` is the id **inside** the join URL (e.g. `abc-defg-hij` for Meet, the room name for
+Jitsi), not the whole URL.
+
+Have only the URL? Send `meeting_url` alone — the API parses it to extract `platform`,
+`native_meeting_id`, and (for Zoom/Teams links that embed one) the passcode:
+
+```bash
+curl -X POST "$API_BASE/bots" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"meeting_url":"https://meet.google.com/abc-defg-hij","bot_name":"Vexa"}'
+```
+
+A URL that isn't a recognizable meeting link is refused with a `422` naming the missing
+`native_meeting_id`; if you supply both `platform` and `meeting_url` and they disagree, that's a
+`422` too. An explicit `native_meeting_id` always wins — the URL never overrides it. A passcode
+already in the URL's query also wins over a separate `passcode` field.
+
+The passcode field is spelled **`passcode`**. `password`, `meeting_password` and the other
+near-misses are refused with a `422` naming the field to use — a passcode we cannot read is a
+passcode the bot would join without, and a `201` that means "joined nothing" costs more to debug
+than an error does.
+
+Optional: `language` (ISO code) and `task` (`transcribe` default, or `translate`). Language works in
+two modes:
+
+- **Auto (omit `language`)** — the STT unit detects the language of each transcription window
+  independently, and every segment carries the detected code in its `language` field.
+- **Forced (`language: "es"`)** — every STT call is pinned to that language; every segment carries it.
+
+Detection is **per window** (one STT call, a few seconds of one speaker's audio), not per word:
+code-switching *within* a window takes the window's language; switching between utterances lands on
+the segment boundary. A window whose language could not be determined has `language: null`.
+
+### Capture-only (no STT)
+
+Default spawns **require** a configured transcription backend. Without `TRANSCRIPTION_SERVICE_URL`
+/ `TRANSCRIPTION_SERVICE_TOKEN`, `POST /bots` answers **503** (refuse loud) rather than joining a
+bot that can never produce text. For a deliberate no-STT meeting, opt out on the spawn:
+
+```bash
+curl -X POST "$API_BASE/bots" \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"platform":"google_meet","native_meeting_id":"abc-defg-hij","bot_name":"Vexa","transcribe_enabled":false}'
+```
+
+Or set `TRANSCRIBE_ENABLED=false` in the deployment env so every spawn defaults to capture-only.
+Recording is separate: pass `recording_enabled` / `RECORDING_ENABLED` if you also need persisted
+audio — audio only; there is no video recording path. See [Configuration](/configuration#transcription-stt).
+
+On Meet and Teams the bot may wait in the lobby until a host admits it; a Jitsi room with the
+lobby enabled behaves the same way.
+
+<Note>
+You often don't need this call at all: a [**planned** meeting](/how-to/plan-a-meeting) with a time
+and a link **auto-joins** at start, and [calendar sync](/how-to/calendar-sync) plans them for you.
+Sending a bot to a link you already planned upgrades the same meeting record (title and workspace
+binding survive) — it never creates a duplicate.
+</Note>
+
+## 2. Read the transcript
+
+Segments stream in as the meeting runs. Poll:
+
+```bash
+curl -H "X-API-Key: $API_KEY" \
+  "$API_BASE/transcripts/google_meet/abc-defg-hij"
+```
+
+```json
+{
+  "segments": [
+    { "speaker": "Jane Liu", "text": "Let's lock the renewal pricing by July 1.",
+      "start": 12.4, "end": 15.1, "language": "en", "completed": true, "confidence": 0.93 }
+  ]
+}
+```
+
+Each segment is diarized (who said what) with word-level timestamps. Live drafts arrive as
+`completed: false` and are replaced by `completed: true` confirmations. For live, per-segment push instead
+of polling, subscribe over **WebSocket** — see the [Meetings API](/api/meetings#get-the-transcript).
+
+## 3. Manage and stop
+
+```bash
+# stop the bot / leave the call
+curl -X DELETE "$API_BASE/bots/google_meet/abc-defg-hij" -H "X-API-Key: $API_KEY"
+```
+
+<Note>
+Mid-call reconfiguration (`PUT …/config`, change language/task while the bot is in the call) rides
+the live bot-control plane and is **not yet wired in the v0.12 open-core stack** — it currently
+returns `404`. Set `language` and `task` on the `POST /bots` spawn. See the
+[Meetings API](/api/meetings#manage-the-bot).
+</Note>
+
+The audio **recording** lands in your object storage — retrieve it via `GET /recordings`
+([Meetings API](/api/meetings#recordings)).
+
+## Authenticated mode
+
+When `authenticated: true` is set in the request, the bot uses a persistent browser profile to join
+the call as your Google account. If the profile is signed out (session expired, cookies cleared), the
+bot **refuses to join** with an `auth_session_missing` error — it never silently degrades to an anonymous
+join. Re-authenticate the browser profile and retry.
+
+## When the bot leaves on its own
+
+An active bot leaves after it receives no remote microphone audio for **10 minutes** and the meeting
+finishes as `completed(left_alone)`. The same rule covers an empty room and a room containing only silent
+notetakers: it listens to the remote-audio signal and does not identify participants by name. Bot-generated
+speech is not part of that signal.
+
+Set a per-meeting window with `automatic_leave.max_time_left_alone` (milliseconds):
+
+```bash
+curl -X POST "$API_BASE/bots" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{
+    "platform":"google_meet",
+    "native_meeting_id":"abc-defg-hij",
+    "automatic_leave":{"max_time_left_alone":300000}
+  }'
+```
+
+An explicit stop still leaves immediately. Removal by the meeting host finishes as `evicted`, and the
+four-hour active-phase cap remains a backstop. A participant who stays but says nothing for the entire
+silence window will also be left; increase the window when silent attendance is expected. Self-hosters can
+change the deployment fallback with `BOT_ALONE_SILENCE_WINDOW_MS`; an explicit per-meeting value wins.
+
+## Next
+
+The transcript compiles into your [workspace](/concepts#workspace), where agents act on it. Turn that into
+an automatic write-up: [Report after every meeting](/how-to/post-meeting-report).
+
+<Note>
+If the bot joins but no text appears, transcription isn't configured — see
+[Troubleshooting](/troubleshooting#bot-joins-but-theres-no-transcript).
+</Note>

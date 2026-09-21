@@ -1,0 +1,192 @@
+# AGENTS.md — the agent front door (in-repo)
+
+Two constitutions govern everything here — read them on the docs site or in this tree:
+
+- **[Architecture](https://docs.vexa.ai/governance/architecture)** — the P-book
+  ([`docs/docs/governance/architecture.mdx`](docs/docs/governance/architecture.mdx)): what the
+  software must be (P1–P23, enforced by the CI gate suite). Your change must fit these.
+- **[Delivery](https://docs.vexa.ai/governance/delivery)** — the D-book
+  ([`docs/docs/governance/delivery.mdx`](docs/docs/governance/delivery.mdx)): how change ships —
+  the whole loop (roadmap · PREPARE · TAKE · validation · merge bar · ship bar) in one file.
+
+This file is the actor contract: intake, claim, and how a session behaves in the checkout.
+
+## Researching Vexa? Start here
+
+- **Found something** (bug, gap, docs lie)? **File a GitHub issue** — every report enters
+  `state: incoming` and waits for triage — three days is our target and we are not hitting it
+  (measured 2026-08-20: 26 waiting, median 13 days). Findings are contributions.
+- **Want to contribute?** The whole roadmap comes back in one public GraphQL call:
+
+```bash
+gh api graphql -f query='
+query { organization(login: "Vexa-ai") { projectV2(number: 2) {
+  items(first: 100) { nodes {
+    content {
+      ... on Issue { number title url state milestone { title } labels(first: 10) { nodes { name } } }
+      ... on DraftIssue { title body }
+    }
+    fieldValues(first: 20) { nodes {
+      ... on ProjectV2ItemFieldSingleSelectValue {
+        field { ... on ProjectV2SingleSelectField { name } } name }
+    } }
+  } }
+} } }'
+```
+
+Four axes per item: **Lane** — the business value, named by who feels it (Google Meet · MS Teams
+· Zoom · API integrators · Transcription · Recordings · Webhooks & billing · First run ·
+Production ops · Feature shelf) — match it to what your contributor actually uses. **Human bar**
+— what validation costs in human terms (Desk check · Operator run · Solo meeting · Small group ·
+Crowd 5+ · In-the-loop UX). **Setup** — the infrastructure floor (None · Lite · Compose ·
+k8s/helm). **Milestone** — the version it gates (currently `v0.12.x`).
+
+Selection rule: filter to your contributor's lane(s), then to the Human bar and Setup they can
+afford. `state: ready` is claimable now; `state: prepared` after the maintainer stamp; items
+with no issue number are declared direction — ask about them, don't claim them.
+
+## Driving Vexa from an agent session
+
+Vexa speaks **MCP**. Point your client at `/mcp` on the same host as the rest of the API — the
+same key, the same gateway — and you get Vexa's meeting tools and prompts with no integration code:
+
+```json
+{"mcpServers": {"Vexa": {"command": "npx", "args": ["-y", "mcp-remote",
+  "https://api.cloud.vexa.ai/mcp", "--header", "Authorization: Bearer ${VEXA_API_KEY}"]}}}
+```
+
+The key lives in `VEXA_API_KEY`. **Scopes decide which tools work**: a `bot`-only key dispatches
+bots and reads recordings but gets `403 Insufficient scope` on transcripts and meetings. The
+key's prefix is a hint, not the truth — call `GET /auth/me` for the scopes you actually hold.
+Full page: https://docs.vexa.ai/vexa-mcp
+
+## Your issue is your PRD
+
+A prepared issue is a worked delivery spec — read it end to end before touching code:
+
+- **Where we are (honest)** — code-grounded claims (`file:line`), era notes where a report
+  predates the tree. Spot-check them; a wrong claim is a finding, report it on the issue.
+- **Components** — your waypoints: one module/seam each, with the existing harness + fixtures
+  you compose (you don't invent scaffolding).
+- **Prepared solution + forks** — the mechanism and the branches you may actually hit.
+  Alternates welcome, never required.
+- **The acceptance table — your definition of done.** Present its observations (red→green
+  pairs, negative controls, anchors) and the PR **merges — that's a promise** (D10). If your
+  bundle satisfies the table and something is still wrong, that's *our* table bug, not yours.
+- **Deployments to validate · docs surface · preferred validator** — the change isn't done
+  until its docs move with it and someone is named to witness it.
+
+## Claiming — and say hello on Discord
+
+1. **Comment on the issue** to claim it (D14b).
+2. **Announce it on [Discord](https://discord.gg/Ga9duGkVz9)** — strongly recommended: one line,
+   "taking #NNN". This opens the human-to-human channel; questions, steering, and validation
+   scheduling all move faster once a maintainer knows a person, not just a branch.
+3. **Heartbeat = visible activity** on the issue/PR. Hours of silence release the claim back
+   to the queue — no hard feelings, no stuck work. Going quiet deliberately? Say so on the
+   issue and the lease holds.
+
+## How you work the checkout
+
+- **Contribution rights are a human decision; automate the mechanics.** Before the first commit,
+  read [`CONTRIBUTOR_RIGHTS.md`](CONTRIBUTOR_RIGHTS.md) and ask the human to choose independent,
+  employer/client-controlled, or unsure. Never choose or tick the PR declaration for them. After
+  the human explicitly chooses the independent or corporate path, inspect repository-local
+  `user.name` and `user.email`, surface any mismatch, and create every commit with
+  `git commit --signoff`. Never change global identity, insert another person's sign-off, enable
+  third-party remediation, or use a maintainer override. Diagnose missing/mismatched commits by
+  SHA. Before an amend/rebase/force-push, show the exact rewrite and obtain explicit approval;
+  prefer the DCO App's individual remediation commit on a shared branch.
+
+- **Discord is the working channel** — blockers, steering, quick questions live there while you
+  work. One rule keeps the record honest: **anything decided lands back on the issue**, or it
+  didn't happen. The issue is the source of truth; Discord is the speed.
+- **Your own worktree BEFORE your first edit — always.** A session's opening move on any work
+  that will touch files is `git worktree add ../vexa-<slug> -b <your-branch>`; only then edit.
+  You do not own `main`, the primary checkout, or any tree you did not create this session —
+  even when the change "belongs on" a branch that lives there. Two tells that you are about to
+  trespass, and the remedy for each:
+  - `git worktree add` says the branch is **"already used by worktree …"** — that tree is
+    another session's checkout, not an invitation. Branch FROM that ref into a fresh worktree
+    of your own (`git worktree add ../vexa-<slug> -b <your-branch> <their-branch>`) and build
+    on it there; coordinate the eventual merge on the issue, never in their tree.
+  - `git status` in a tree you're about to edit shows **uncommitted files you didn't write** —
+    stop, surface them, move to your own worktree. Never adopt, commit, or clean another
+    session's uncommitted state.
+  One worktree per session, one session per worktree — no exceptions for "just one file",
+  docs, or governance edits (this rule was added from a session that edited another agent's
+  checkout after seeing the first tell).
+- **Never fan two parallel agents onto the same hot file — write your own file, or sequence.**
+  Parallel PRs that all append to one file's tail collide on the same last line even when the
+  additions don't interact — the v0.12.9 batch paid 5 manual conflict-resolution cycles to exactly
+  this. The three hot files and their remedy:
+  - **`docs/docs/changelog.mdx`** — do **not** edit it for a per-PR line. Drop a fragment at
+    `docs/changelog.d/<pr>-<slug>.md` (one file per PR → zero collisions; the release collector
+    folds them in, `docs-reflects` stamp intact). See
+    [`docs/changelog.d/README.md`](docs/changelog.d/README.md). That fragment is your `docs-current` touch.
+  - **`deploy/helm/tests/test_template.sh`** and **`docs/docs/deployment-kubernetes.mdx`** — no
+    fragment mechanism, and **not** `merge=union`-safe (the helm test's `need <count>` assertions are
+    *edited* when a resource count changes, not appended; the k8s page is prose). If two claimed
+    issues both touch one of these, **flag it on the issues and sequence the PRs** (land one, rebase
+    the other) rather than racing them into a conflict. This is the same "anything decided lands back
+    on the issue" rule applied before the collision.
+- **Read the chart first.** [`docs/views/architecture.dsl`](docs/views/architecture.dsl)
+  (~1.4k tokens) is the generated whole-graph index: every node, edge, carrier, owner. For a
+  slice: `pnpm arch:viz cluster:<domain>`. If your change adds/moves a module or alters a
+  data flow, update `architecture.calm.json` in the SAME change and `pnpm seal:arch` (P23).
+- **The loop — expect before you act.** For every objective, write the falsifiable **Expected**
+  first, act, then record the **Actual** (raw evidence: commands, outputs, counts — and what
+  you did NOT check), and a **Verdict**. Expected ⇒ continue; unexpected ⇒ stop and interpret —
+  an unexpected result is a finding, never something to paper over. Unfinished scaffolding you
+  were always meant to complete is NOT "unexpected" — finish it; stop only on genuine
+  contradiction.
+- **Debug ≠ deliver — the two loops.** Prove a diff on the hottest loop that carries the real
+  external semantics (live exec · overlay · spawn probe, seconds–minutes) *before* you package it
+  through the release pipeline; never cut a build to find out whether the code works, never rerun a
+  deterministic red as a "flake", and rehearse the demo path end-to-end before the human walks it.
+  See [the two loops](docs/docs/governance/delivery.mdx) (§7 in this tree — the law at YOUR
+  checkout's revision; the published copy is at
+  [docs.vexa.ai/governance/delivery#the-two-loops](https://docs.vexa.ai/governance/delivery#the-two-loops)).
+- **Gates green before push:** `node scripts/gates.mjs all` (also runs on pre-push). Green is
+  necessary, never sufficient — prove user-facing behavior at the altitude of the claim (P19):
+  a live leg for live behavior, not just unit green.
+
+## The hard rules (from the P-book — the ones sessions trip on)
+
+- **Fix at the point of introduction, never the point of observation.** A defect surfaces in a
+  consumer but is born in a producer. Trace it hop-by-hop back to where it's introduced, then
+  fix there. Never patch a consumer to compensate for a producer's bug — we don't work around
+  our own bugs. Reproduce without a live meeting before you fix.
+- **The core owns its contracts; clients adapt.** A consumer's legacy shape is translated at
+  the client boundary, never pushed upstream into the core.
+- **Brick front doors are per-runtime; inject runtime dependencies.** Browser-reachable front
+  doors are types-only; node-only capability lives behind a subpath; cross-brick runtime deps
+  are injected. The bundler is the gate a logic test passes right over.
+- **Source states the designed present, not its history.** No "this used to be X", no bug
+  archaeology in comments — write code as if it had always been this way.
+- **Report facts, then your reading — labelled as yours.** State the objective, ship raw
+  evidence (including what was NOT checked), and put "done/works" downstream of the data (P21).
+
+## Delivering — the PR
+
+**Witness your own value first.** Before opening the PR, run your change live at the issue's
+declared human bar — your own run is the bundle's first row. You never ask another human to
+witness value you haven't witnessed yourself.
+
+Then the PR carries two artifacts, judged on different axes (D8):
+
+1. **The observation bundle** — your acceptance table mapped row-by-row to evidence, in the
+   issue's own numbering, your live witness included. This answers *"is the value real?"*
+2. **The diff** — which passes review and the security checks the issue names. This answers
+   *"is it correct and safe?"*
+
+A diff with no bundle is not reviewable. Authorship: agents are instruments — **what you ship
+is yours**, full responsibility, honored as full authorship and credit; no agent co-author
+trailers (D13).
+
+The maintainer triages your PR by the
+[TAKE protocol](https://docs.vexa.ai/governance/delivery#take-protocol) — read it to know
+exactly how you'll be read. Then a **non-author validates the value**
+([the attestation shape](https://docs.vexa.ai/governance/delivery#validation)); validators are
+credited in release notes alongside you, and the reporter of the original bug is the preferred
+signer of your fix.

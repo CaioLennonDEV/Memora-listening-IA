@@ -1,0 +1,774 @@
+# release-images — build + publish the v0.12 image set, then hand off to release-validate
+# (release lane C2/C3). Split per #551: this workflow owns the EXPENSIVE, rarely-wrong half
+# (build + publish); release-validate.yml owns the CHEAP, iterated-on half (prove + promote).
+# A validate-harness fix re-runs release-validate alone (~minutes, dispatchable from any
+# branch) instead of rebuilding 10 unchanged images.
+#
+#   tag push v0.12.* (or workflow_dispatch with an explicit version) →
+#     preflight       secrets present (fail fast + loud) · tag ↔ package.json ↔ Chart.yaml
+#                     appVersion consistency · helm static gates · pinned-render assertions
+#     build (matrix)  the uniform images — buildx, amd64+arm64, registry :buildcache cache
+#     build-bot       vexaai/vexa-bot — special-cased: FROM the locally-built
+#                     vexa/meet-join-env:dev base, so it uses the classic docker driver
+#     sbom            per-release SPDX SBOM from the tagged source (npm + pip + baked model
+#                     weights) — uploaded as an artifact; `validate` gates on it (ADR-0004)
+#     validate        calls release-validate.yml (manifest verify · image-identity · validate
+#                     legs) with promote: FALSE — publish + prove only. This builds the versioned
+#                     :vX.Y.Z candidate so it can be WITNESSED; it never moves :v012. Promotion is
+#                     a separate, human-gated release-validate dispatch after the witness pass +
+#                     value acceptance (guarantee lines 7 + 8; ADR-0029).
+#
+# Constitutional guard: this chain NEVER moves vexaai/vexa-bot:dev or vexaai/vexa-bot:latest —
+# the 0.10 line publishes there and live 0.10 deployments pull them at spawn time. It also never
+# moves any :dev tag (dev = locally-built, by convention across the deploy stacks).
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   DOCKERHUB_USERNAME — Docker Hub account with push rights to the vexaai org
+#   DOCKERHUB_TOKEN    — a Read & Write access token for that account
+# Missing secrets fail in preflight with a pointed message; no build job starts.
+# Docker Hub repos auto-created on first push (e.g. vexaai/v012-mcp) must be PUBLIC —
+# the validation legs and end users pull anonymously.
+name: release-images
+
+on:
+  push:
+    tags: ["v0.12.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image tag to build + publish (vX.Y.Z[-suffix], e.g. v0.12.0-rc.1). Base version must match Chart.yaml appVersion + package.json."
+        required: true
+        type: string
+      # No promote_latest here: this workflow never promotes (see the validate handoff, promote:false).
+      # Moving :v012 (and, by explicit ruling, :latest) is a separate release-validate dispatch that
+      # clears the witness + value gates and the release-promote Environment.
+
+concurrency:
+  group: release-images-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────────────────────
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      reuse_candidate: ${{ steps.candidate.outputs.reuse_candidate }}
+      candidate_map: ${{ steps.candidate.outputs.candidate_map }}
+      build_mode: ${{ steps.build_plan.outputs.build_mode }}
+      build_matrix: ${{ steps.build_plan.outputs.build_matrix }}
+      build_bot: ${{ steps.build_plan.outputs.build_bot }}
+      base_candidate_tag: ${{ steps.build_plan.outputs.base_candidate_tag }}
+    steps:
+      - name: Docker Hub credentials present?
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DH_USER" ] || [ -z "$DH_TOKEN" ]; then
+            echo "::error title=Docker Hub secrets missing::release-images cannot publish. Create repository secrets DOCKERHUB_USERNAME (an account with push rights to the vexaai org) and DOCKERHUB_TOKEN (a Read & Write access token) under Settings → Secrets and variables → Actions, then re-run. Failing fast before any build starts."
+            exit 1
+          fi
+          echo "✓ Docker Hub credentials configured"
+
+      - uses: actions/checkout@v4
+        with:
+          # Candidate provenance compares against the witnessed build commit. A
+          # depth-1 checkout makes that commit unknowable and must never widen
+          # into a fresh all-image build.
+          fetch-depth: 0
+
+      - name: Resolve + cross-check the release version
+        id: version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION_INPUT:-$GITHUB_REF_NAME}"
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+            || { echo "::error ::'$VERSION' is not a release version (want vX.Y.Z[-suffix])"; exit 1; }
+          BARE="${VERSION#v}"          # 0.12.0-rc.1
+          BASE="${BARE%%-*}"           # 0.12.0
+          PKG="$(node -p "require('./package.json').version")"
+          APPV="$(awk -F'"' '/^appVersion:/ {print $2}' deploy/helm/charts/vexa/Chart.yaml)"
+          [ "$BASE" = "$PKG" ]  || { echo "::error ::tag $VERSION vs package.json version $PKG — bump one of them"; exit 1; }
+          [ "$BASE" = "$APPV" ] || { echo "::error ::tag $VERSION vs Chart.yaml appVersion $APPV — bump one of them"; exit 1; }
+          if [ "$BARE" != "$BASE" ]; then PRE=true; else PRE=false; fi
+          { echo "version=$VERSION"; echo "prerelease=$PRE"; } >> "$GITHUB_OUTPUT"
+          echo "✓ releasing $VERSION (prerelease=$PRE; package.json=$PKG, appVersion=$APPV)"
+
+      - name: Resolve an exact witnessed candidate, if declared
+        id: candidate
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          MAP="releases/$VERSION/candidate-images.json"
+          if [ ! -f "$MAP" ]; then
+            {
+              echo "reuse_candidate=false"
+              echo "candidate_map="
+            } >> "$GITHUB_OUTPUT"
+            echo "· no committed candidate map; build the stable set from this source"
+            exit 0
+          fi
+
+          node release/candidate-image-map.mjs check "$MAP" "$VERSION"
+          node release/candidate-image-map.mjs check-source-inputs "$MAP" "$GITHUB_SHA"
+          {
+            echo "reuse_candidate=true"
+            echo "candidate_map=$MAP"
+          } >> "$GITHUB_OUTPUT"
+          echo "✓ same-byte stable publication selected: $MAP"
+
+      - name: Resolve the fail-closed image build plan
+        id: build_plan
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REUSE_CANDIDATE: ${{ steps.candidate.outputs.reuse_candidate }}
+        run: |
+          set -euo pipefail
+          BARE="${VERSION#v}"
+          BASE="${BARE%%-*}"
+          BASE_MAP="releases/v$BASE/candidate-images.json"
+
+          if [ "$REUSE_CANDIDATE" = "true" ]; then
+            PLAN="$(
+              node release/candidate-image-map.mjs emit-build-plan - "$GITHUB_SHA" |
+                jq -c '.mode = "reuse"'
+            )"
+          elif [ -f "$BASE_MAP" ]; then
+            PLAN="$(node release/candidate-image-map.mjs emit-build-plan "$BASE_MAP" "$GITHUB_SHA")"
+          else
+            PLAN="$(node release/candidate-image-map.mjs emit-build-plan - "$GITHUB_SHA")"
+          fi
+
+          {
+            echo "build_mode=$(jq -r '.mode' <<<"$PLAN")"
+            echo "build_matrix=$(jq -c '.build_matrix' <<<"$PLAN")"
+            echo "build_bot=$(jq -r '.build_bot' <<<"$PLAN")"
+            echo "base_candidate_tag=$(jq -r '.base_candidate_tag // ""' <<<"$PLAN")"
+          } >> "$GITHUB_OUTPUT"
+          echo "✓ build plan: $PLAN"
+
+      - name: Audit the cancelled attempt and refuse target-tag collisions
+        if: steps.build_plan.outputs.build_mode == 'bot-lite-delta'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-audit
+          node release/dockerhub-tag-audit.mjs \
+            --target "$VERSION" \
+            --output release-audit/candidate-tag-audit.tsv
+
+      - name: Preserve the authenticated candidate-tag audit
+        if: always() && steps.build_plan.outputs.build_mode == 'bot-lite-delta'
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-tag-audit-${{ steps.version.outputs.version }}
+          path: release-audit/candidate-tag-audit.tsv
+          if-no-files-found: error
+
+      - name: Helm static gates (lint + template assertions)
+        run: |
+          bash deploy/helm/tests/test_helm_lint.sh
+          bash deploy/helm/tests/test_template.sh
+
+      - name: Pinned render — every image ref follows global.imageTag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          RENDER="$(helm template vexa deploy/helm/charts/vexa -n vexa \
+            -f deploy/helm/charts/vexa/values-test.yaml --set global.imageTag="$VERSION")"
+          N="$(grep -cE "image: \"vexaai/v012-[a-z-]+:$VERSION\"" <<<"$RENDER" || true)"
+          [ "$N" -ge 6 ] || { echo "::error ::expected >=6 v012 component images pinned to $VERSION, got $N"; exit 1; }
+          grep -q "vexaai/vexa-bot:$VERSION" <<<"$RENDER" \
+            || { echo "::error ::bot image (runtime BROWSER_IMAGE) does not follow global.imageTag"; exit 1; }
+          grep -q "vexaai/v012-agent-worker:$VERSION" <<<"$RENDER" \
+            || { echo "::error ::agent-worker image does not follow global.imageTag"; exit 1; }
+          if grep -nE 'vexaai/[a-z0-9-]+:dev' <<<"$RENDER"; then
+            echo "::error ::pinned render still references :dev images"; exit 1
+          fi
+          echo "✓ pinned render: $N component refs + bot + agent-worker at $VERSION, zero :dev"
+
+  # ──────────────────────────────────────────────────────────────────────────────────────────
+  build:
+    name: "build ${{ matrix.name }}"
+    needs: preflight
+    if: needs.preflight.outputs.reuse_candidate != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.build_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk (large image)
+        if: matrix.free_disk == true
+        uses: jlumbroso/free-disk-space@v1.3.1
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: vexaai/${{ matrix.repository }}:${{ needs.preflight.outputs.version }}
+          build-args: ${{ matrix.build_args }}
+          cache-from: ${{ matrix.use_registry_cache && format('type=registry,ref=vexaai/{0}:buildcache', matrix.repository) || '' }}
+          cache-to: ${{ matrix.use_registry_cache && format('type=registry,ref=vexaai/{0}:buildcache,mode=max', matrix.repository) || '' }}
+
+  # The bot builds FROM the locally-built vexa/meet-join-env:dev base image, which the buildx
+  # docker-container driver cannot see — so this job stays on the classic docker driver
+  # (BuildKit via DOCKER_BUILDKIT=1) where local images resolve, and uses inline cache instead
+  # of a :buildcache ref.
+  build-bot:
+    needs: preflight
+    if: >-
+      ${{
+        needs.preflight.outputs.reuse_candidate != 'true' &&
+        needs.preflight.outputs.build_bot == 'true'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk (the bot build needs ~10 GB of layers)
+        uses: jlumbroso/free-disk-space@v1.3.1
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build the join-env base (vexa/meet-join-env:dev)
+        run: |
+          DOCKER_BUILDKIT=1 docker build \
+            -f core/meetings/modules/join/Dockerfile.env \
+            -t vexa/meet-join-env:dev \
+            core/meetings/modules/join
+      - name: Build + push vexaai/vexa-bot
+        env:
+          BUILD_MODE: ${{ needs.preflight.outputs.build_mode }}
+        run: |
+          set -euo pipefail
+          CACHE_ARGS=()
+          if [ "$BUILD_MODE" != "bot-lite-delta" ]; then
+            CACHE_ARGS=(
+              --build-arg BUILDKIT_INLINE_CACHE=1
+              --cache-from "vexaai/vexa-bot:v012"
+            )
+          fi
+          # Full builds may reuse the stable cache; replacement candidates do not
+          # spend pull quota or trust mutable cache state from that repository.
+          # The release version is stamped INTO the image: it lands in every captured-signal tape
+          # header, so a fixture collected in prod names the build that produced it long after the
+          # deployment is gone.
+          DOCKER_BUILDKIT=1 docker build \
+            -f core/meetings/services/bot/Dockerfile \
+            "${CACHE_ARGS[@]}" \
+            --build-arg "VEXA_IMAGE_VERSION=$VERSION" \
+            -t "vexaai/vexa-bot:$VERSION" \
+            .
+          docker push "vexaai/vexa-bot:$VERSION"
+
+  # A release that already ran the full build → stage → production witness path
+  # promotes those exact descriptors to the stable tag. It must not rebuild after
+  # the witness: a rebuild is a new candidate even when source text is unchanged.
+  alias-candidate:
+    name: publish exact witnessed candidate as stable
+    needs: preflight
+    if: needs.preflight.outputs.reuse_candidate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      MAP: ${{ needs.preflight.outputs.candidate_map }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Copy descriptors without rebuilding or wrapping single-platform manifests
+        run: |
+          set -euo pipefail
+          : > stable-image-aliases.tsv
+
+          while IFS=$'\t' read -r image top_digest platform expected_manifest expected_config; do
+            descriptor="$(
+              docker buildx imagetools inspect "$image@$top_digest" --format '{{json .}}'
+            )"
+            actual_manifest="$(
+              jq -r --arg platform "$platform" '
+                ($platform | split("/") | {os: .[0], architecture: .[1]}) as $wanted |
+                if (.manifest.manifests? | type) == "array" then
+                  .manifest.manifests[]
+                  | select(
+                      .platform.os == $wanted.os and
+                      .platform.architecture == $wanted.architecture
+                    )
+                  | .digest
+                else
+                  .manifest.digest
+                end
+              ' <<<"$descriptor" |
+                head -n 1
+            )"
+            [ "$actual_manifest" = "$expected_manifest" ] || {
+              echo "::error ::$image $platform manifest moved: expected $expected_manifest, got $actual_manifest"
+              exit 1
+            }
+
+            actual_config="$(
+              docker manifest inspect -v "$image@$actual_manifest" |
+                jq -r '.OCIManifest.config.digest // .SchemaV2Manifest.config.digest // empty'
+            )"
+            [ "$actual_config" = "$expected_config" ] || {
+              echo "::error ::$image $platform config moved: expected $expected_config, got $actual_config"
+              exit 1
+            }
+          done < <(node release/candidate-image-map.mjs emit-platform-tsv "$MAP")
+
+          while IFS=$'\t' read -r image digest image_candidate_tag; do
+            candidate="$image:$image_candidate_tag"
+            stable="$image:$VERSION"
+
+            candidate_digest="$(
+              docker buildx imagetools inspect "$candidate" --format '{{json .}}' |
+                jq -r '.manifest.digest'
+            )"
+            [ "$candidate_digest" = "$digest" ] || {
+              echo "::error ::$candidate moved: expected $digest, got $candidate_digest"
+              exit 1
+            }
+
+            if stable_json="$(docker buildx imagetools inspect "$stable" --format '{{json .}}' 2>/dev/null)"; then
+              stable_digest="$(jq -r '.manifest.digest' <<<"$stable_json")"
+              [ "$stable_digest" = "$digest" ] || {
+                echo "::error ::refusing to overwrite $stable at $stable_digest (packet pins $digest)"
+                exit 1
+              }
+              echo "· $stable already points at $digest"
+            else
+              docker buildx imagetools create \
+                --prefer-index=false \
+                -t "$stable" \
+                "$image@$digest"
+            fi
+
+            readback="$(
+              docker buildx imagetools inspect "$stable" --format '{{json .}}' |
+                jq -r '.manifest.digest'
+            )"
+            [ "$readback" = "$digest" ] || {
+              echo "::error ::$stable readback $readback != witnessed $digest"
+              exit 1
+            }
+            printf '%s\t%s\t%s\n' "$stable" "$readback" "$candidate" |
+              tee -a stable-image-aliases.tsv
+          done < <(node release/candidate-image-map.mjs emit-tsv "$MAP")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-image-aliases-${{ needs.preflight.outputs.version }}
+          path: stable-image-aliases.tsv
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────────────────────────────
+  # Per-release SPDX SBOM (ADR-0004: "Emit an SBOM (SPDX) per release so the consumer's OSPO
+  # can audit"). Generated from the TAGGED source that built the images: the npm tree (pnpm's
+  # licence index, same source gate:licenses uses) + the pip inventory (committed uv.locks) +
+  # the baked model weights (onnx-community/pyannote-segmentation-3.0 — the piece gate:licenses
+  # cannot see, since it is not a dependency). `validate` NEEDS this, so no release publishes
+  # without an SBOM in the run's artifacts.
+  sbom:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      SBOM_FILE: vexa-sbom-${{ needs.preflight.outputs.version }}.spdx.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm } # pnpm 11.7 requires Node >= 22.13
+      # Tolerate minor lockfile drift, exactly as the image builds do (Dockerfiles install with
+      # --frozen-lockfile=false) — the SBOM must reflect the same tree the images were built from.
+      # --ignore-scripts: the SBOM reads dependency METADATA (pnpm's licence index + lockfiles),
+      # never postinstall artifacts — and postinstalls are where concurrent onnxruntime-node
+      # versions race over one /tmp extraction dir and kill the install.
+      - run: pnpm install --frozen-lockfile=false --ignore-scripts
+      - name: Generate SPDX SBOM
+        run: node scripts/sbom.mjs --version "$VERSION" --output "$SBOM_FILE"
+      - name: Sanity-check the SBOM (SPDX-2.3, carries the baked model + a populated dep tree)
+        run: |
+          node -e '
+            const d = require("./" + process.env.SBOM_FILE);
+            if (d.spdxVersion !== "SPDX-2.3") throw new Error("not SPDX-2.3: " + d.spdxVersion);
+            if (!d.packages.some(p => p.name.includes("pyannote"))) throw new Error("baked model missing from SBOM");
+            if (d.packages.length < 3) throw new Error("SBOM has too few packages: " + d.packages.length);
+            console.log("✓ SBOM ok:", d.packages.length, "packages");
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vexa-sbom-${{ needs.preflight.outputs.version }}
+          path: ${{ env.SBOM_FILE }}
+          if-no-files-found: error
+
+  # A repair after a witnessed candidate may change fewer image inputs than the full set.
+  # The only partial path currently proven is Bot+Lite: the source-input planner must select
+  # exactly those two, the build matrix contains only Lite, and Bot stays in its special job.
+  # Nothing in this path aliases a stable tag.
+  validate-bot-delta:
+    needs: [preflight, build, build-bot, sbom]
+    if: >-
+      ${{
+        always() &&
+        needs.preflight.outputs.build_mode == 'bot-lite-delta' &&
+        needs.preflight.result == 'success' &&
+        needs.build.result == 'success' &&
+        needs.build-bot.result == 'success' &&
+        needs.sbom.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      BASE_VERSION: ${{ needs.preflight.outputs.base_candidate_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jlumbroso/free-disk-space@v1.3.1
+      - uses: astral-sh/setup-uv@v5
+      - name: Published Bot has the promised identity
+        run: |
+          set -euo pipefail
+          REF="vexaai/vexa-bot:$VERSION"
+          docker pull -q --platform linux/amd64 "$REF"
+          docker run --rm --entrypoint "" "$REF" \
+            bash -c 'test -x /app/entrypoint.sh && test -f /app/browser-utils.global.js'
+          echo "✓ $REF is runnable Bot content on linux/amd64"
+      - name: Spawn the replacement Bot through the frozen candidate stack
+        working-directory: deploy/compose
+        env:
+          COMPOSE_NO_BUILD: "1"
+          COMPOSE_BOT: "1"
+          IMAGE_TAG: ${{ needs.preflight.outputs.base_candidate_tag }}
+          BROWSER_IMAGE: vexaai/vexa-bot:${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          [ -n "$BASE_VERSION" ] || {
+            echo "::error ::Bot+Lite delta has no frozen base candidate tag"
+            exit 1
+          }
+          cp .env.example .env
+          docker pull "vexaai/v012-agent-worker:$BASE_VERSION"
+          docker pull "$BROWSER_IMAGE"
+          ./bin/stack-test
+      - name: Compose state on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker compose -p vexa-compose-gate -f deploy/compose/docker-compose.yml \
+            logs --no-color --tail 200 || true
+
+  validate-lite-delta-amd64:
+    needs: [preflight, build, build-bot, sbom]
+    if: >-
+      ${{
+        always() &&
+        needs.preflight.outputs.build_mode == 'bot-lite-delta' &&
+        needs.preflight.result == 'success' &&
+        needs.build.result == 'success' &&
+        needs.build-bot.result == 'success' &&
+        needs.sbom.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jlumbroso/free-disk-space@v1.3.1
+      - name: Published Lite has the promised identity and offline model
+        run: |
+          set -euo pipefail
+          REF="vexaai/vexa-lite:$VERSION"
+          docker pull -q --platform linux/amd64 "$REF"
+          docker run --rm --entrypoint "" "$REF" \
+            bash -c 'test -f /etc/supervisor/conf.d/vexa.conf && test -x /entrypoint.sh'
+          docker run --rm --network none --entrypoint "" \
+            -e VEXA_HF_OFFLINE=1 -e VEXA_HF_CACHE=/opt/hf-cache \
+            "$REF" node /app/core/meetings/services/bot/warm-hf-cache.mjs
+          echo "✓ $REF identity + offline pyannote bake green on linux/amd64"
+      - name: Boot Lite and prove front doors plus concurrent bots
+        run: |
+          printf 'ADMIN_TOKEN=ci-admin-token\nTRANSCRIPTION_SERVICE_URL=\nTRANSCRIPTION_SERVICE_TOKEN=\nIMAGE_TAG=%s\n' \
+            "$VERSION" > .env
+          make -C deploy/lite up init-db
+          for i in $(seq 1 10); do
+            if make -C deploy/lite test; then break; fi
+            [ "$i" -lt 10 ] || {
+              echo "::error ::Lite front doors failed after 10 attempts"
+              exit 1
+            }
+            sleep 15
+          done
+          ADMIN_TOKEN=ci-admin-token deploy/lite/tests/concurrent-bots.sh
+      - name: Lite state on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs vexa-lite --tail 300 || true
+      - name: Tear down Lite
+        if: always()
+        run: make -C deploy/lite down || true
+
+  validate-lite-delta-arm64:
+    needs: [preflight, build, build-bot, sbom]
+    if: >-
+      ${{
+        always() &&
+        needs.preflight.outputs.build_mode == 'bot-lite-delta' &&
+        needs.preflight.result == 'success' &&
+        needs.build.result == 'success' &&
+        needs.build-bot.result == 'success' &&
+        needs.sbom.result == 'success'
+      }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jlumbroso/free-disk-space@v1.3.1
+      - name: Published Lite is native arm64 content
+        run: |
+          set -euo pipefail
+          [ "$(uname -m)" = "aarch64" ] || {
+            echo "::error ::Lite arm64 validation requires a native aarch64 runner"
+            exit 1
+          }
+          REF="vexaai/vexa-lite:$VERSION"
+          docker pull -q --platform linux/arm64 "$REF"
+          docker run --rm --entrypoint "" "$REF" \
+            bash -c 'test -f /etc/supervisor/conf.d/vexa.conf && test -x /entrypoint.sh'
+          echo "✓ $REF identity green on native linux/arm64"
+      - name: Boot Lite and prove native arm64 front doors
+        run: |
+          printf 'ADMIN_TOKEN=ci-admin-token\nTRANSCRIPTION_SERVICE_URL=\nTRANSCRIPTION_SERVICE_TOKEN=\nIMAGE_TAG=%s\n' \
+            "$VERSION" > .env
+          make -C deploy/lite up init-db
+          for i in $(seq 1 10); do
+            if make -C deploy/lite test; then break; fi
+            [ "$i" -lt 10 ] || {
+              echo "::error ::arm64 Lite front doors failed after 10 attempts"
+              exit 1
+            }
+            sleep 15
+          done
+      - name: Lite arm64 state on failure
+        if: failure()
+        run: |
+          uname -m
+          docker ps -a
+          docker logs vexa-lite --tail 300 || true
+      - name: Tear down Lite
+        if: always()
+        run: make -C deploy/lite down || true
+
+  candidate-delta-receipt:
+    needs:
+      - preflight
+      - build
+      - build-bot
+      - validate-bot-delta
+      - validate-lite-delta-amd64
+      - validate-lite-delta-arm64
+    if: >-
+      ${{
+        always() &&
+        needs.preflight.outputs.build_mode == 'bot-lite-delta' &&
+        needs.build.result == 'success' &&
+        needs.build-bot.result == 'success' &&
+        needs.validate-bot-delta.result == 'success' &&
+        needs.validate-lite-delta-amd64.result == 'success' &&
+        needs.validate-lite-delta-arm64.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      BASE_VERSION: ${{ needs.preflight.outputs.base_candidate_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Read back immutable Bot and Lite identities
+        run: |
+          set -euo pipefail
+          mkdir -p release-receipt
+
+          inspect_image() {
+            local image="$1" attestations="$2"
+            shift 2
+            local ref="$image:$VERSION" descriptor top platforms_json
+            descriptor="$(docker buildx imagetools inspect "$ref" --format '{{json .}}')"
+            top="$(jq -r '.manifest.digest' <<<"$descriptor")"
+            [[ "$top" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "::error ::invalid top-level digest for $ref: $top"
+              return 1
+            }
+            platforms_json='{}'
+            for platform in "$@"; do
+              manifest="$(
+                jq -r --arg platform "$platform" '
+                  ($platform | split("/") | {os: .[0], architecture: .[1]}) as $wanted |
+                  if (.manifest.manifests? | type) == "array" then
+                    .manifest.manifests[]
+                    | select(
+                        .platform.os == $wanted.os and
+                        .platform.architecture == $wanted.architecture
+                      )
+                    | .digest
+                  else
+                    .manifest.digest
+                  end
+                ' <<<"$descriptor" |
+                  head -n 1
+              )"
+              [[ "$manifest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                echo "::error ::missing $platform manifest for $ref"
+                return 1
+              }
+              config="$(
+                docker manifest inspect -v "$image@$manifest" |
+                  jq -r '
+                    if type == "array" then .[0] else . end |
+                    .OCIManifest.config.digest // .SchemaV2Manifest.config.digest // empty
+                  '
+              )"
+              [[ "$config" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                echo "::error ::missing $platform config for $image@$manifest"
+                return 1
+              }
+              platforms_json="$(
+                jq -c \
+                  --arg platform "$platform" \
+                  --arg manifest "$manifest" \
+                  --arg config "$config" \
+                  '. + {($platform): {
+                    manifest_digest: $manifest,
+                    config_digest: $config
+                  }}' <<<"$platforms_json"
+              )"
+            done
+            jq -cn \
+              --arg digest "$top" \
+              --argjson attestations "$attestations" \
+              --argjson platform_manifests "$platforms_json" \
+              '{
+                digest: $digest,
+                attestations: $attestations,
+                platform_manifests: $platform_manifests
+              }'
+          }
+
+          BOT="$(inspect_image vexaai/vexa-bot false linux/amd64)"
+          LITE="$(inspect_image vexaai/vexa-lite true linux/amd64 linux/arm64)"
+          RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          RELEASE="v${VERSION#v}"
+          RELEASE="${RELEASE%%-*}"
+          jq -n \
+            --arg schema_version "1" \
+            --arg release "$RELEASE" \
+            --arg candidate_tag "$VERSION" \
+            --arg base_candidate_tag "$BASE_VERSION" \
+            --arg source "$GITHUB_SHA" \
+            --arg run "$RUN_URL" \
+            --argjson bot "$BOT" \
+            --argjson lite "$LITE" \
+            '{
+              schema_version: ($schema_version | tonumber),
+              release: $release,
+              candidate_tag: $candidate_tag,
+              base_candidate_tag: $base_candidate_tag,
+              build_source: $source,
+              validation_source: $source,
+              validation_run: $run,
+              stable_aliases_mutated: false,
+              images: {
+                "vexaai/vexa-bot": $bot,
+                "vexaai/vexa-lite": $lite
+              }
+            }' | tee release-receipt/candidate-delta.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-delta-receipt-${{ needs.preflight.outputs.version }}
+          path: release-receipt/candidate-delta.json
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────────────────────────────
+  # The other half (#551): manifest verify → image-identity ∥ validate legs. NO promote here.
+  # Re-runnable standalone via release-validate's own workflow_dispatch — from any branch,
+  # against this already-published version — when a validate-harness fix needs iterating.
+  #
+  # promote is DELIBERATELY not requested on the tag-push path (guarantee lines 7 + 8, the
+  # delivery constitution's ship bar: "publish and promote… neither happens before the witness
+  # pass is signed"). This job builds + publishes the versioned :vX.Y.Z images and proves them
+  # (L4), so the release candidate EXISTS to be witnessed — but it never moves :v012. Promotion
+  # is a separate, human-gated act: after the witness pass is signed (releases/<version>/
+  # witness.json) and every batch change is accepted (release-value-gate), a maintainer dispatches
+  # release-validate with promote:true, which then clears the witness-gate + value-gate and pauses
+  # on the `release-promote` Environment for the owner's approval before :v012 moves.
+  #
+  # #1237 — what this nested call can and cannot prove at FREEZE time. release-validate's
+  # packet-bound candidate-map identity check reads a map that records the digests THIS build
+  # has only just published, so on a new rc the map cannot exist yet. release-validate defers
+  # that one check (with a notice in its run summary and a line in the guarantee block) and
+  # runs every other leg against the published bytes; a human then binds the packet and
+  # dispatches release-validate standalone, where the identity IS enforced. The consequence
+  # for this workflow's conclusion is the point: release-images is red when the build or the
+  # published artifacts are wrong, and green when they are not.
+  validate:
+    needs: [preflight, build, build-bot, alias-candidate, sbom]
+    if: >-
+      ${{
+        always() &&
+        needs.preflight.result == 'success' &&
+        needs.sbom.result == 'success' &&
+        (
+          (
+            needs.preflight.outputs.reuse_candidate == 'true' &&
+            needs.alias-candidate.result == 'success'
+          ) ||
+          (
+            needs.preflight.outputs.reuse_candidate != 'true' &&
+            needs.preflight.outputs.build_mode == 'full' &&
+            needs.build.result == 'success' &&
+            needs.build-bot.result == 'success'
+          )
+        )
+      }}
+    uses: ./.github/workflows/release-validate.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      promote: false
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

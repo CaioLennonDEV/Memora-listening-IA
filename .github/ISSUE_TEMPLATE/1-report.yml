@@ -1,0 +1,35 @@
+name: Report a problem
+description: "Tell us what broke, in your words. Your report is labelled `state: incoming` and waits for triage — three days is our target and we are not hitting it today. It will come back as a prepared, ready-to-work issue, never dead-end."
+labels: ["state: incoming", "type: bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks — reports are step 1 of our delivery loop ([docs/docs/governance/delivery.mdx](../blob/main/docs/docs/governance/delivery.mdx)).
+        This becomes a prepared issue, and when the fix ships you'll be told and invited to validate it. **It will not dead-end.**
+        Three days is our triage target and we are not hitting it: measured 2026-08-20, 26 reports were waiting, median wait 13 days.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got — your words are the issue's opening.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Meeting platform (if relevant)
+      placeholder: Google Meet / MS Teams / Zoom / n.a.
+  - type: input
+    id: deploy
+    attributes:
+      label: Deployment — observed on which version / verified against which tag?
+      description: Which deployment, and the image tag or version you observed it on (or last verified against). A report anchored to an old tree gets re-anchored before we act — so this saves a round-trip.
+      placeholder: hosted / self-hosted compose / lite / helm — and the image tag, e.g. v0.12.11
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots, meeting shape
+      description: Anything captured — bot logs, API responses, how many people, which language.
