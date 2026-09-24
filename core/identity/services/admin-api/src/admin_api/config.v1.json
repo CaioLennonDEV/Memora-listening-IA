@@ -148,6 +148,13 @@
    "default": "8001",
    "description": "uvicorn bind port",
    "targets": ["lite"]
+  },
+  {
+   "key": "DEFAULT_BOT_NAME",
+   "class": "defaulted",
+   "default": "Vexa",
+   "description": "default bot display name used when calendar or bot context has no stored name",
+   "targets": ["compose"]
   }
  ]
 }

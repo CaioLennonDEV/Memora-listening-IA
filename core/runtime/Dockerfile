@@ -13,8 +13,9 @@ ARG KUBECTL_VERSION=v1.31.4
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl; \
     arch="$(dpkg --print-architecture)"; case "$arch" in amd64) karch=amd64;; arm64) karch=arm64;; *) karch="$arch";; esac; \
-    curl -fsSL --retry 3 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${karch}/kubectl" -o /usr/local/bin/kubectl \
-      || curl -fsSLk --retry 3 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${karch}/kubectl" -o /usr/local/bin/kubectl; \
+    (curl -fsSL --retry 3 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${karch}/kubectl" -o /usr/local/bin/kubectl \
+      || curl -fsSLk --retry 3 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${karch}/kubectl" -o /usr/local/bin/kubectl \
+      || printf '#!/bin/sh\necho "kubectl stub (k8s backend only)" >&2\nexit 1\n' > /usr/local/bin/kubectl); \
     chmod +x /usr/local/bin/kubectl; \
     apt-get purge -y curl; apt-get autoremove -y; rm -rf /var/lib/apt/lists/*
 

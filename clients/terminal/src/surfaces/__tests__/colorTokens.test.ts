@@ -44,7 +44,7 @@ describe("palette guard", () => {
     const offenders: string[] = [];
     for (const dir of SCAN_DIRS) {
       for (const f of sourceFiles(join(SRC, dir))) {
-        const rel = f.slice(SRC.length + 1);
+        const rel = f.slice(SRC.length + 1).replace(/\\/g, "/");
         if (rel === "app/globals.css" || HEX_ALLOWLIST.has(rel)) continue;
         const src = readFileSync(f, "utf8");
         for (const line of src.split("\n")) {

@@ -6,6 +6,8 @@ import { LiveTranscriptEngine, type EngineActions, type EngineEntity, type Engin
 import { useMeetingNotes } from "./notes";
 import { deriveProcessingView } from "./processingView";
 import { MeetingScopeProvider, MeetingSourceProvider, useEntities, useMeeting, useSignals } from "./useMeeting";
+import { MeetingSummaryView } from "./MeetingSummaryView";
+import { Icon } from "../ui-kit";
 
 export const MEETING_CANVAS_CONTENT_INSET = 18;
 
@@ -67,6 +69,8 @@ function ProcessedTranscript() {
   );
 }
 
+export type MeetingCanvasTab = "summary" | "transcript";
+
 function MeetingCanvasBody({ meetingId }: { meetingId?: string }) {
   const { meeting, transcript } = useMeeting();
   const live = meeting.live === true;
@@ -85,6 +89,9 @@ function MeetingCanvasBody({ meetingId }: { meetingId?: string }) {
   // null = untouched → follow the default (which can flip once the durable notes hydrate).
   const [override, setOverride] = useState<boolean | null>(null);
   const processing = deriveProcessingView({ override, live, hasNotes, durableTerminal });
+
+  // Tab selector state: default to "summary" (Ata da Reunião) for finished meetings, or "transcript" for live
+  const [activeTab, setActiveTab] = useState<MeetingCanvasTab>(durableTerminal ? "summary" : "transcript");
 
   // LIVE: the toggle ALSO controls backend processing — ON enables the copilot (full-history backfill
   // the first time, else resume); OFF disables it. COMPLETED: pure view switch — there is nothing to
@@ -106,29 +113,100 @@ function MeetingCanvasBody({ meetingId }: { meetingId?: string }) {
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--bg)" }}>
-      <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 10, padding: `8px ${MEETING_CANVAS_CONTENT_INSET}px 0` }}>
-        <button
-          type="button"
-          onClick={toggleProcessing}
-          aria-pressed={processing}
-          title={processing ? "Showing the cleaned, copilot-processed view" : (effectiveLive ? "Showing the raw transcript — flip on for processing" : "Showing the raw transcript")}
-          style={{
-            display: "flex", alignItems: "center", gap: 7, cursor: "pointer",
-            background: processing ? "var(--accent)" : "transparent",
-            color: processing ? "var(--on-accent)" : "var(--t2)",
-            border: `1px solid ${processing ? "var(--accent)" : "var(--line2)"}`,
-            borderRadius: 8, padding: "4px 10px", fontSize: 12, fontWeight: 600,
-          }}
-        >
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: processing ? "var(--on-accent)" : "var(--t3)", flex: "none" }} />
-          {label}
-        </button>
-        <span style={{ fontSize: 11.5, color: "var(--t3)" }}>{processing ? "cleaned + copilot" : "raw transcript"}</span>
+      {/* Top Segmented Navigation & Control Bar */}
+      <div
+        style={{
+          flex: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 12,
+          padding: `10px ${MEETING_CANVAS_CONTENT_INSET}px 8px`,
+          borderBottom: "1px solid var(--line)",
+          background: "var(--panel)",
+        }}
+      >
+        {/* Main View Tabs: Ata & Resumo IA vs Transcrição */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--panel2)", padding: 3, borderRadius: 9 }}>
+          <button
+            type="button"
+            onClick={() => setActiveTab("summary")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+              background: activeTab === "summary" ? "var(--bg)" : "transparent",
+              color: activeTab === "summary" ? "var(--t1)" : "var(--t3)",
+              border: activeTab === "summary" ? "1px solid var(--line2)" : "1px solid transparent",
+              borderRadius: 7,
+              padding: "5px 12px",
+              fontSize: 12.5,
+              fontWeight: activeTab === "summary" ? 650 : 500,
+              boxShadow: activeTab === "summary" ? "0 2px 6px rgba(0,0,0,0.18)" : "none",
+              transition: "all .12s ease",
+            }}
+          >
+            <Icon name="spark" size={13} style={{ color: activeTab === "summary" ? "var(--violet)" : "inherit" }} />
+            <span>Ata & Resumo IA</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("transcript")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+              background: activeTab === "transcript" ? "var(--bg)" : "transparent",
+              color: activeTab === "transcript" ? "var(--t1)" : "var(--t3)",
+              border: activeTab === "transcript" ? "1px solid var(--line2)" : "1px solid transparent",
+              borderRadius: 7,
+              padding: "5px 12px",
+              fontSize: 12.5,
+              fontWeight: activeTab === "transcript" ? 650 : 500,
+              boxShadow: activeTab === "transcript" ? "0 2px 6px rgba(0,0,0,0.18)" : "none",
+              transition: "all .12s ease",
+            }}
+          >
+            <Icon name="msg" size={13} style={{ color: activeTab === "transcript" ? "var(--blue)" : "inherit" }} />
+            <span>Transcrição dos Falantes</span>
+          </button>
+        </div>
+
+        {/* Processing Mode Toggle (Processed / Raw) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            type="button"
+            onClick={toggleProcessing}
+            aria-pressed={processing}
+            title={processing ? "Showing the cleaned, copilot-processed view" : (effectiveLive ? "Showing the raw transcript — flip on for processing" : "Showing the raw transcript")}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, cursor: "pointer",
+              background: processing ? "var(--accent)" : "transparent",
+              color: processing ? "var(--on-accent)" : "var(--t2)",
+              border: `1px solid ${processing ? "var(--accent)" : "var(--line2)"}`,
+              borderRadius: 8, padding: "4px 10px", fontSize: 12, fontWeight: 600,
+            }}
+          >
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: processing ? "var(--on-accent)" : "var(--t3)", flex: "none" }} />
+            {label}
+          </button>
+          <span style={{ fontSize: 11.5, color: "var(--t3)" }}>{processing ? "cleaned + copilot" : "raw transcript"}</span>
+        </div>
       </div>
+
       <MeetingHealthBanner />
+
       <main style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         <div style={{ padding: MEETING_CANVAS_CONTENT_INSET }}>
-          {processing ? <ProcessedTranscript /> : <RawTranscript />}
+          {activeTab === "summary" ? (
+            <MeetingSummaryView meetingId={meetingId} />
+          ) : (
+            processing ? <ProcessedTranscript /> : <RawTranscript />
+          )}
         </div>
       </main>
     </div>

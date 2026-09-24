@@ -161,7 +161,10 @@
    "class": "defaulted",
    "default": "45000",
    "description": "Wave 1 Google Meet: debounce before left_alone when live tile roster shows humans=0; forwarded to spawned bots when set",
-   "targets": ["compose", "helm", "lite"]
+   "targets": [
+    "compose",
+    "helm"
+   ]
   },
   {
    "key": "BOT_SPEAKER_MIN_AUDIO_SEC",
@@ -368,6 +371,42 @@
    "default": "<tempdir>/vexa-workloads",
    "description": "process-backend workload log dir — per-workload stdout/stderr capture (the process analog of docker logs); fail-open to DEVNULL if unwritable",
    "targets": []
+  },
+  {
+   "key": "VEXA_TLS_INSECURE",
+   "class": "defaulted",
+   "default": "(unset)",
+   "description": "local dev/debug only: set NODE_TLS_REJECT_UNAUTHORIZED=0 on spawned bots under DPI-SSL interceptors",
+   "targets": [
+    "compose"
+   ]
+  },
+  {
+   "key": "HOST_BOT_WHISPER_CLIENT",
+   "class": "defaulted",
+   "default": "(unset)",
+   "description": "docker backend: optional host path to whisper client override bind-mounted into spawned bots",
+   "targets": [
+    "compose"
+   ]
+  },
+  {
+   "key": "HOST_BOT_DIST_OVERLAY",
+   "class": "defaulted",
+   "default": "(unset)",
+   "description": "docker backend: optional host path to bot dist overlay bind-mounted into spawned bots",
+   "targets": [
+    "compose"
+   ]
+  },
+  {
+   "key": "HOST_BOT_BROWSER_UTILS",
+   "class": "defaulted",
+   "default": "(unset)",
+   "description": "docker backend: optional host path to browser utilities bundle bind-mounted into spawned bots",
+   "targets": [
+    "compose"
+   ]
   }
  ],
  "capabilities": {

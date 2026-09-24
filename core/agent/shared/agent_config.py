@@ -63,7 +63,7 @@ DEFAULT_TAG_RULES = (
 class MeetingConfig:
     """The resolved meeting-copilot knobs (every field has a code default; see ``load_meeting_config``)."""
 
-    enabled: bool = True
+    enabled: bool = False
     model: str = field(default_factory=default_meeting_model)
     cadence_segments: int = DEFAULT_CADENCE_SEGMENTS
     card_kinds: list[str] = field(default_factory=lambda: list(DEFAULT_CARD_KINDS))

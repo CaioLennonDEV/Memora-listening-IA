@@ -26,6 +26,9 @@ export function humanCount(snapshot: RosterSnapshot): number | null {
 /**
  * Debounced "only the bot remains" watch. Unreliable snapshots never start/advance leave.
  * A reliable humans>0 cancels the timer. Leave fires once humans===0 for `debounceMs`.
+ *
+ * Pure clock helper — the live source also arms a real `setTimeout` so leave does not depend on
+ * a later roster tick arriving after the debounce window (a single "0 humans" publish is enough).
  */
 export class RosterAloneWatch {
   private aloneSinceMs: number | null = null;
@@ -47,6 +50,13 @@ export class RosterAloneWatch {
 
 export const DEFAULT_ROSTER_ALONE_DEBOUNCE_MS = 45_000;
 
+/**
+ * How many consecutive reliable humans>0 snapshots are required to CANCEL an armed leave.
+ * Teams alone-room scans flicker 0↔1 (ghost tile / bot tile not marked isSelf) about once per
+ * second — a single humans>0 must not reset the 60s leave clock or the bot never exits.
+ */
+export const ROSTER_LEAVE_CANCEL_STREAK = 3;
+
 export function resolveRosterAloneDebounceMs(
   env: NodeJS.ProcessEnv = process.env,
   warn: (message: string) => void = (message) => console.warn(`[bot] ${message}`),
@@ -60,27 +70,95 @@ export function resolveRosterAloneDebounceMs(
   return DEFAULT_ROSTER_ALONE_DEBOUNCE_MS;
 }
 
+type ClearableTimer = { clear: () => void };
+
 /** Push-driven AlonenessSource: observe() snapshots; onAlone fires after debounce. */
 export function createRosterAlonenessSource(options: {
   debounceMs: number;
   now?: () => number;
+  /** Injectable clock for tests — default is `setTimeout`. */
+  setTimer?: (fn: () => void, ms: number) => ClearableTimer;
+  /** Override cancel hysteresis (tests). */
+  cancelStreakNeeded?: number;
 }): AlonenessSource & { observe(snapshot: RosterSnapshot): void } {
   const now = options.now ?? Date.now;
+  const cancelStreakNeeded = options.cancelStreakNeeded ?? ROSTER_LEAVE_CANCEL_STREAK;
+  const setTimer = options.setTimer ?? ((fn, ms) => {
+    const id = setTimeout(fn, ms);
+    return { clear: () => clearTimeout(id) };
+  });
   const watch = new RosterAloneWatch(options.debounceMs);
   let leaveCb: (() => void) | null = null;
   let fired = false;
+  let timer: ClearableTimer | null = null;
+  /** Last reliable alone/not-alone — survives unreliable scans; used to arm when onAlone wires late. */
+  let alonePending = false;
+  /** Consecutive reliable humans>0 while a leave timer is armed — see ROSTER_LEAVE_CANCEL_STREAK. */
+  let humanStreak = 0;
+
+  const clearTimer = (): void => {
+    timer?.clear();
+    timer = null;
+  };
+
+  const fire = (): void => {
+    if (fired || !leaveCb) return;
+    fired = true;
+    clearTimer();
+    humanStreak = 0;
+    console.log(`[bot] roster alone: leaving after ${options.debounceMs}ms debounce`);
+    leaveCb();
+  };
+
+  const armTimer = (): void => {
+    if (fired || !leaveCb || timer) return;
+    console.log(`[bot] roster alone: armed leave in ${options.debounceMs}ms`);
+    timer = setTimer(fire, options.debounceMs);
+  };
 
   return {
     observe(snapshot: RosterSnapshot): void {
-      if (fired || !leaveCb) return;
-      if (watch.onSnapshot(snapshot, now()) === 'leave') {
-        fired = true;
-        leaveCb();
+      if (fired) return;
+      const humans = humanCount(snapshot);
+      // Unreliable: do not start, cancel, or advance — empty DOM ≠ empty room.
+      if (humans === null) return;
+
+      if (humans > 0) {
+        humanStreak += 1;
+        // Flicker of a ghost tile (Teams alone: 0↔1 every scan) must NOT reset the leave clock.
+        if (humanStreak < cancelStreakNeeded) {
+          console.log(
+            `[bot] roster alone: humans=${humans} streak=${humanStreak}/${cancelStreakNeeded} (leave timer kept)`,
+          );
+          return;
+        }
+        alonePending = false;
+        humanStreak = 0;
+        clearTimer();
+        watch.onSnapshot(snapshot, now());
+        console.log(`[bot] roster alone: humans>0 confirmed — leave cancelled`);
+        return;
       }
+
+      humanStreak = 0;
+      alonePending = true;
+      // Keep the pure watch in sync (tests + late observe after debounce).
+      if (leaveCb && watch.onSnapshot(snapshot, now()) === 'leave') {
+        fire();
+        return;
+      }
+      // Arm a wall-clock timer on first reliable alone so leave does not require another tick
+      // after debounceMs (UI can show "0 in the room" from a single publish while scans stall).
+      if (leaveCb) armTimer();
     },
     onAlone(callback: () => void): () => void {
       leaveCb = callback;
-      return () => { leaveCb = null; };
+      // Room was already empty before the active-phase subscription — start the clock now.
+      if (alonePending) armTimer();
+      return () => {
+        leaveCb = null;
+        clearTimer();
+      };
     },
   };
 }

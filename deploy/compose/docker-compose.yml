@@ -89,6 +89,28 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-vexa-secret-key}
     networks: [vexa]
 
+  # ─── LLM Bridge (Anthropic Messages API -> Groq / OpenAI compat) ──────────────────────────────
+  llm-bridge:
+    build:
+      context: ./llm-bridge
+      dockerfile: Dockerfile
+    image: vexaai/llm-bridge:${IMAGE_TAG:-dev}
+    ports:
+      - "127.0.0.1:${LLM_BRIDGE_PORT:-4000}:4000"
+    environment:
+      - GROQ_API_KEY=${VEXA_LLM_API_KEY:-}
+      - TARGET_MODEL=${VEXA_LLM_MODEL:-qwen/qwen3.8-27b}
+      - GROQ_BASE_URL=https://api.groq.com/openai/v1
+      - PORT=4000
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [vexa]
+    restart: unless-stopped
+
   # ─── Core services ────────────────────────────────────────────────────────────────────────────
   admin-api:
     build:
