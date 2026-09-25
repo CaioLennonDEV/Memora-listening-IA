@@ -1253,7 +1253,7 @@ def build(reg: Registry, db) -> None:
         env_val = (ctx.flow.param("email_whitelist") if ctx.flow else None) or \
             os.environ.get("VEXA_FLOWS_EMAIL_WHITELIST", "")
         whitelist = {e.strip().lower() for e in env_val.split(",") if e.strip()}
-        admin_url = os.environ.get("VEXA_FLOWS_ADMIN_API_URL") or os.environ.get("ADMIN_API_URL")
+        admin_url = os.environ.get("VEXA_FLOWS_ADMIN_API_URL")
         secret = os.environ.get("INTERNAL_API_SECRET") or os.environ.get("VEXA_FLOWS_ADMIN_KEY")
         if admin_url and secret:
             try:

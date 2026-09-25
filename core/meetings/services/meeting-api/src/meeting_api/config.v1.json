@@ -654,6 +654,56 @@
    "secret": true,
    "description": "operator key for the same edge, sent as X-Flows-Operator-Key (flows' POST /events is authenticated). Declared as part of the edge rather than beside it, on the same terms as identity's admin-api and agent-api's control_plane declare theirs: unset alongside an unset URL is the no-flows profile; unset with a URL set is a deployment whose facts are being refused.",
    "targets": ["compose"]
+  },
+  {
+   "key": "IMAP_ENABLED",
+   "class": "defaulted",
+   "default": "false",
+   "description": "enables the background IMAP IDLE listener that auto-dispatches bots when meeting invitations arrive via email (false by default — explicit operator opt-in)",
+   "targets": ["compose"]
+  },
+  {
+   "key": "IMAP_USER",
+   "class": "defaulted",
+   "default": "",
+   "description": "email address / username for IMAP IDLE mailbox access",
+   "targets": ["compose"]
+  },
+  {
+   "key": "IMAP_PASSWORD",
+   "class": "defaulted",
+   "default": "",
+   "secret": true,
+   "description": "password or app password for IMAP IDLE mailbox authentication",
+   "targets": ["compose"]
+  },
+  {
+   "key": "IMAP_HOST",
+   "class": "defaulted",
+   "default": "imap.gmail.com",
+   "description": "hostname of the IMAP server to connect to for push notifications",
+   "targets": ["compose"]
+  },
+  {
+   "key": "IMAP_PORT",
+   "class": "defaulted",
+   "default": "993",
+   "description": "port of the IMAP server (SSL)",
+   "targets": ["compose"]
+  },
+  {
+   "key": "IMAP_BOT_NAME",
+   "class": "defaulted",
+   "default": "Atena",
+   "description": "bot display name override for meetings dispatched via email watcher",
+   "targets": ["compose"]
+  },
+  {
+   "key": "IMAP_USER_ID",
+   "class": "defaulted",
+   "default": "",
+   "description": "Vexa DB user ID under whose quota bots dispatched by the email watcher run",
+   "targets": ["compose"]
   }
  ],
  "capabilities": {
