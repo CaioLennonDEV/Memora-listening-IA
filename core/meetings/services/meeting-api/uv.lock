@@ -3,6 +3,15 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
+name = "aioimaplib"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/d1/807d2afbf35198efa76b6d97fba97dc8bc0d088092bfb90f0d864b9634d2/aioimaplib-1.2.0.tar.gz", hash = "sha256:7efb4b0c375057ff777bb6f01fa60ccfb74e62374331e778573d5d45e8e6802b", size = 362857, upload-time = "2025-01-10T10:59:57.972Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/c7/30fcf47c6a85df1af812fbbbec206d90c0044bda42ff81d9ca6487611998/aioimaplib-1.2.0-py3-none-any.whl", hash = "sha256:f206b73541f42a792e25a233e5b46550ba612ed4ea536aac6f9f79b462f1e2d2", size = 367993, upload-time = "2025-01-10T10:59:54.686Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -648,6 +657,7 @@ name = "vexa-meeting-api"
 version = "0.12.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aioimaplib" },
     { name = "croniter" },
     { name = "fakeredis" },
     { name = "fastapi" },
@@ -664,6 +674,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aioimaplib", specifier = ">=1,<2" },
     { name = "croniter", specifier = ">=2,<4" },
     { name = "fakeredis", specifier = ">=2.21,<3" },
     { name = "fastapi", specifier = ">=0.110,<1" },

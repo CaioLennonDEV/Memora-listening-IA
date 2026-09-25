@@ -53,9 +53,9 @@ export async function setTranscriptionPrefs(update: { url?: string; token?: stri
   }));
 }
 
-/** The admin-writable platform-settings keys: the two config domains + the first-run wizard's
- *  durable "setup" state. */
-export type GlobalSettingKey = "models" | "transcription" | "setup";
+/** The admin-writable platform-settings keys: the config domains, first-run wizard setup,
+ *  and outbound email whitelist. */
+export type GlobalSettingKey = "models" | "transcription" | "setup" | "whitelist";
 
 /** null ⇒ caller is not an admin (the route 404s) — the global card simply doesn't render. */
 export async function getGlobalSetting(key: GlobalSettingKey): Promise<GlobalSetting | null> {
@@ -71,6 +71,43 @@ export async function setGlobalSetting(key: GlobalSettingKey, update: GlobalSett
   });
   const body = await jsonOrThrow(res) as { value?: GlobalSetting };
   return body.value ?? {};
+}
+
+export async function getWhitelistEmails(): Promise<string[]> {
+  const setting = await getGlobalSetting("whitelist");
+  const raw = setting?.emails || "";
+  return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+export async function setWhitelistEmails(emails: string[]): Promise<string[]> {
+  const joined = emails.map((s) => s.trim().toLowerCase()).filter(Boolean).join(",");
+  const setting = await setGlobalSetting("whitelist", { emails: joined });
+  const raw = setting?.emails || "";
+  return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+export interface UserRoleInfo {
+  id: number;
+  email: string;
+  name?: string | null;
+  is_admin: boolean;
+  is_owner?: boolean;
+}
+
+export async function getUserRoles(): Promise<UserRoleInfo[]> {
+  const res = await fetch("/api/admin/roles", { cache: "no-store" });
+  if (!res.ok) return [];
+  const data = await jsonOrThrow(res) as { users?: UserRoleInfo[] };
+  return data.users || [];
+}
+
+export async function setUserRole(email: string, is_admin: boolean): Promise<UserRoleInfo> {
+  const res = await fetch("/api/admin/roles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, is_admin }),
+  });
+  return jsonOrThrow(res);
 }
 
 /** On-demand credential tests (agent-api /api/{models,transcription}/test via the catch-all →

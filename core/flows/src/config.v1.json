@@ -273,6 +273,15 @@
       ]
     },
     {
+      "key": "VEXA_FLOWS_EMAIL_WHITELIST",
+      "class": "capability",
+      "description": "The OUTBOUND specific email recipient whitelist (comma-separated). When set, only attendees/organizers in this list receive meeting notes.",
+      "capability": "outbound_policy",
+      "targets": [
+        "compose"
+      ]
+    },
+    {
       "key": "VEXA_FLOWS_DATA_STATEMENT",
       "class": "capability",
       "description": "The deployment's own sentence about where the words live, carried in what it mails.",

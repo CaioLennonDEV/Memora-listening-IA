@@ -280,9 +280,10 @@ _DIAGNOSTICS_FIELDS = ("capture_signal",)
 # agent-api's verifier (POST /api/global/ready), which reads the files and the commit before it
 # flips anything: nothing may mark itself ready.
 _GLOBAL_SETUP_FIELDS = ("state", "company", "completed_at")
+_WHITELIST_FIELDS = ("emails",)
 SETTING_KEYS = {"models": _MODELS_FIELDS, "transcription": _TRANSCRIPTION_FIELDS,
                 "setup": _SETUP_FIELDS, "diagnostics": _DIAGNOSTICS_FIELDS,
-                "global_setup": _GLOBAL_SETUP_FIELDS}
+                "global_setup": _GLOBAL_SETUP_FIELDS, "whitelist": _WHITELIST_FIELDS}
 
 # One vocabulary for the gate, so no caller invents its own spelling of "not ready".
 GLOBAL_SETUP_COMPLETED = "completed"
@@ -1051,6 +1052,95 @@ def create_app() -> FastAPI:
         db.add(user)
         await db.commit()
         return {"claimed": True, "admin_exists": True}
+
+    @app.get("/internal/users/emails", include_in_schema=False)
+    async def list_user_emails(request: Request, db: AsyncSession = Depends(get_db)):
+        """List emails of all registered platform users (case-folded)."""
+        _check_internal(request)
+        rows = (await db.execute(select(User.email))).scalars().all()
+        return {"emails": [e.lower() for e in rows if e]}
+
+    @app.get("/internal/users/roles", include_in_schema=False)
+    async def list_user_roles(request: Request, db: AsyncSession = Depends(get_db)):
+        """List emails, admin status and owner status of registered platform users."""
+        _check_internal(request)
+        users = (await db.execute(select(User))).scalars().all()
+        def _check_owner(u: User) -> bool:
+            data = u.data if isinstance(u.data, dict) else {}
+            memberships = data.get("memberships")
+            if isinstance(memberships, list):
+                return any(isinstance(m, dict) and m.get("role") == "owner" for m in memberships)
+            return False
+
+        return {
+            "users": [
+                {
+                    "id": u.id,
+                    "email": u.email.lower(),
+                    "name": u.name,
+                    "is_admin": bool((u.data or {}).get("is_admin") is True) if isinstance(u.data, dict) else False,
+                    "is_owner": _check_owner(u),
+                }
+                for u in users if u.email
+            ]
+        }
+
+    @app.post("/internal/users/role", include_in_schema=False)
+    async def set_user_role(payload: dict, request: Request, db: AsyncSession = Depends(get_db)):
+        """Set or toggle admin role for a user by email."""
+        _check_internal(request)
+        from sqlalchemy.orm import attributes
+        email = (payload.get("email") or "").strip().lower()
+        if not email:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="email required")
+        is_admin = bool(payload.get("is_admin", False))
+        user = (await db.execute(
+            select(User).where(func.lower(User.email) == email).order_by(User.id)
+        )).scalars().first()
+
+        def _is_owner(u: Optional[User]) -> bool:
+            if not u or not isinstance(u.data, dict):
+                return False
+            memberships = u.data.get("memberships")
+            if isinstance(memberships, list):
+                return any(isinstance(m, dict) and m.get("role") == "owner" for m in memberships)
+            return False
+
+        if not is_admin and user:
+            if _is_owner(user):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="O Dono do Workspace é o proprietário principal e não pode ter seus privilégios de Administrador revogados.",
+                )
+
+            if (user.data or {}).get("is_admin") is True:
+                total_admins = (await db.execute(
+                    select(func.count(User.id)).where(User.data["is_admin"].astext == "true")
+                )).scalar() or 0
+                if total_admins <= 1:
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        detail="Não é possível remover o único administrador da plataforma. Promova outro usuário antes.",
+                    )
+
+        if not user:
+            user = User(email=normalise_email(email), name=email.split("@")[0], max_concurrent_bots=3)
+            user.data = {"is_admin": is_admin, "onboarding_completed_at": time.time()}
+            db.add(user)
+        else:
+            data = dict(user.data or {})
+            data["is_admin"] = is_admin
+            user.data = data
+            attributes.flag_modified(user, "data")
+            db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        return {
+            "id": user.id,
+            "email": user.email,
+            "is_admin": (user.data or {}).get("is_admin") is True if isinstance(user.data, dict) else False,
+            "is_owner": _is_owner(user),
+        }
 
     @app.get("/internal/users/{user_id}/memberships", include_in_schema=False)
     async def list_memberships(user_id: str, request: Request, db: AsyncSession = Depends(get_db)):

@@ -16,6 +16,9 @@ dependencies = [
     "pytest-asyncio>=0.23,<2",
     "icalendar>=6,<7",
     "python-dateutil>=2.9,<3",
+    # email_watcher: pure-asyncio IMAP IDLE client (lazy import — not loaded in the offline gate
+    # venv; only wired when IMAP_ENABLED=true in the production entrypoint).
+    "aioimaplib>=1,<2",
 ]
 
 [tool.uv]

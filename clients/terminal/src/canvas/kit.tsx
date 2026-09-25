@@ -436,7 +436,7 @@ function Transcript({ segments, liveCaption, empty = "Waiting for transcript", l
   );
 }
 
-function LiveTranscript({ segments, liveCaption, empty = "waiting for transcript…", loading = false, maxSegments = 3 }: { segments?: TranscriptSegment[]; liveCaption?: string; empty?: string; maxSegments?: number } & Loadable) {
+function LiveTranscript({ segments, liveCaption, empty = "Aguardando a transcrição…", loading = false, maxSegments = 3 }: { segments?: TranscriptSegment[]; liveCaption?: string; empty?: string; maxSegments?: number } & Loadable) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const safeSegments = normalizeTranscriptSegments(segments);
   const limit = Math.max(1, Math.floor(toNumber(maxSegments, 3)));
@@ -475,7 +475,7 @@ function LiveTranscript({ segments, liveCaption, empty = "waiting for transcript
     return (
       <div role="status" aria-live="polite" style={{ ...bandStyle, display: "flex", alignItems: "center" }}>
         <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--t3)", flex: "none", marginRight: 8 }} />
-        <span style={{ color: "var(--t3)", fontSize: 12.5, fontStyle: "italic", ...ellipsisLine() }}>{toText(empty, "waiting for transcript…")}</span>
+        <span style={{ color: "var(--t3)", fontSize: 12.5, fontStyle: "italic", ...ellipsisLine() }}>{toText(empty, "Aguardando a transcrição…")}</span>
       </div>
     );
   }

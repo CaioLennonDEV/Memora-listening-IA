@@ -689,6 +689,172 @@ def _attach_background_loops(
                 log.exception("signal tape janitor tick failed")
             await asyncio.sleep(signal_janitor_interval)
 
+    async def _email_watcher_loop() -> None:
+        """IMAP IDLE loop — dispatches bots from meeting invites in real time (push, not poll).
+
+        Activation: ``IMAP_ENABLED=true`` in the environment (default: false — explicit opt-in).
+        Required env: ``IMAP_USER``, ``IMAP_PASSWORD``, ``IMAP_HOST``, ``IMAP_PORT``.
+        Optional env: ``IMAP_BOT_NAME`` (default: Atena), ``IMAP_USER_ID`` (required for dispatch).
+
+        The callback calls ``bot_spawn.service.request_bot`` IN-PROCESS — no HTTP round-trip,
+        no n8n, no exposed localhost.  The watcher re-connects with exponential backoff on any
+        transport error so a transient IMAP drop never kills the loop.
+        """
+        from .email_watcher import start_email_watcher
+
+        # The internal ``request_bot`` call requires the same ports the HTTP route uses — we
+        # borrow the already-wired adapters via the closure (meeting_repo + runtime + app.state).
+        # A missing ADMIN_API_URL/user context is best-effort: the watcher inherits the same
+        # "best-effort identity fetch" semantics as the auto-join sweep.
+        from .bot_spawn.service import request_bot
+        from .collector.meeting_link import parse_meeting_url
+
+        # IMAP_USER_ID: the Vexa DB user that "owns" this inbox's dispatched bots.
+        # Without it the email watcher logs a warning and skips every dispatch rather than
+        # attributing a bot to the wrong user.
+        raw_uid = os.getenv("IMAP_USER_ID", "")
+        if not raw_uid.strip().isdigit():
+            log.warning(
+                "[EmailWatcher] IMAP_USER_ID is not set or not a valid integer — "
+                "email watcher disabled (set IMAP_USER_ID to your Vexa user id)."
+            )
+            return
+
+        _user_id = int(raw_uid.strip())
+
+        async def _on_meeting_found(payload: dict) -> None:
+            from datetime import datetime, timezone, timedelta
+            from .collector.meeting_link import parse_meeting_url
+
+            meeting_url = payload.get("meeting_url")
+            scheduled_at = payload.get("scheduled_at")
+            subject = payload.get("subject") or "Reunião"
+            platform = payload.get("platform") or "unknown"
+            calendar_uid = payload.get("calendar_uid")
+
+            # Check if event is scheduled for the future (more than 5 minutes from now)
+            is_future = False
+            if scheduled_at:
+                try:
+                    dt = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+                    if dt > datetime.now(timezone.utc) + timedelta(minutes=5):
+                        is_future = True
+                except Exception:
+                    is_future = False
+
+            if is_future:
+                native_meeting_id = None
+                if meeting_url:
+                    parsed = parse_meeting_url(meeting_url)
+                    if parsed:
+                        platform, native_meeting_id = parsed
+
+                try:
+                    updated = False
+                    async with transcript_store._session_factory() as db:
+                        from sqlalchemy import select
+                        from sqlalchemy.orm.attributes import flag_modified
+                        from .collector.models import Meeting
+
+                        stmt = select(Meeting).where(
+                            Meeting.user_id == _user_id,
+                            Meeting.status.in_(("scheduled", "idle")),
+                        )
+                        if native_meeting_id:
+                            stmt = stmt.where(
+                                Meeting.platform == platform,
+                                Meeting.platform_specific_id == native_meeting_id,
+                            )
+                        else:
+                            stmt = stmt.where(
+                                Meeting.data["title"].astext == subject
+                            )
+                        existing = (await db.execute(stmt.order_by(Meeting.created_at.desc()))).scalars().first()
+                        if existing:
+                            d = dict(existing.data) if isinstance(existing.data, dict) else {}
+                            d["scheduled_at"] = scheduled_at
+                            d["title"] = subject
+                            if meeting_url:
+                                d["constructed_meeting_url"] = meeting_url
+                                d["auto_join"] = True
+                            existing.data = d
+                            flag_modified(existing, "data")
+                            await db.commit()
+                            updated = True
+                            log.info(
+                                "[EmailWatcher] meeting rescheduled to %s (%s): %r — (id: %s)",
+                                scheduled_at, platform, subject, existing.id,
+                            )
+
+                    if not updated:
+                        row = await transcript_store.create_planned_meeting(
+                            _user_id,
+                            platform=platform,
+                            native_meeting_id=native_meeting_id,
+                            title=subject,
+                            scheduled_at=scheduled_at,
+                            meeting_url=meeting_url,
+                            auto_join=bool(meeting_url),
+                            calendar_uid=None,  # NEVER set calendar_uid: keeps calendar-sync loop from deleting it
+                        )
+                        log.info(
+                            "[EmailWatcher] meeting scheduled for %s (%s): %r — url: %s (id: %s)",
+                            scheduled_at, platform, subject, meeting_url or "(no link)", (row or {}).get("id"),
+                        )
+                except Exception:  # noqa: BLE001
+                    log.exception("[EmailWatcher] failed to schedule/reschedule meeting %r", subject)
+                return
+
+            # Immediate dispatch path
+            if not meeting_url:
+                log.info("[EmailWatcher] no meeting link found for %r and no future date — skipping", subject)
+                return
+
+            parsed = parse_meeting_url(meeting_url)
+            if not parsed:
+                log.warning(
+                    "[EmailWatcher] could not parse platform/native_id from URL %r — skipping",
+                    meeting_url,
+                )
+                return
+            platform, native_meeting_id = parsed
+
+            try:
+                res = await request_bot(
+                    meeting_repo,
+                    runtime,
+                    authority=service_authority,
+                    user_id=_user_id,
+                    platform=platform,
+                    native_meeting_id=native_meeting_id,
+                    meeting_url=meeting_url,
+                    bot_name=payload.get("bot_name") or None,
+                    token_secret=os.getenv("ADMIN_TOKEN") or None,
+                    redis_url=os.getenv("REDIS_URL"),
+                )
+                if subject and res and isinstance(res, dict) and "id" in res:
+                    try:
+                        async with meeting_repo._session_factory() as db:
+                            from sqlalchemy import select
+                            from sqlalchemy.orm.attributes import flag_modified
+                            from .sessions.models import Meeting
+                            m = (await db.execute(select(Meeting).where(Meeting.id == res["id"]))).scalars().first()
+                            if m:
+                                d = dict(m.data) if isinstance(m.data, dict) else {}
+                                d["title"] = subject
+                                m.data = d
+                                flag_modified(m, "data")
+                                await db.commit()
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001
+                log.exception(
+                    "[EmailWatcher] request_bot failed for %s (%s)",
+                    meeting_url, platform,
+                )
+
+        await start_email_watcher(_on_meeting_found)
+
     async def _ensure_fts_index_once() -> None:
         """F191 / MIGRATION-0006 — ``ensure_fts_index`` (adapters.py, ``SqlAlchemyTranscriptStore``)
         built the transcript FTS GIN index and was never called from anywhere: it shipped defined,
@@ -744,6 +910,7 @@ def _attach_background_loops(
             asyncio.create_task(_calendar_sync_loop(), name="calendar-sync"),
             asyncio.create_task(_signal_tape_janitor_loop(), name="signal-tape-janitor"),
             asyncio.create_task(_ensure_fts_index_once(), name="ensure-fts-index"),
+            asyncio.create_task(_email_watcher_loop(), name="email-watcher"),
         ]
         log.info("meeting-api background loops started: %s", [t.get_name() for t in tasks])
         try:

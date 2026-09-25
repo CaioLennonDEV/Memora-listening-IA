@@ -176,9 +176,6 @@ function DropBotInline() {
         else if (r.status === 409) setMsg("That meeting already has a bot.");
         else if (r.status === 401) setMsg("Not signed in — sign in and retry.");
         else {
-          // Everything else used to land as `Couldn't send (403): {"code":"service_not_allowed",…}`
-          // — the raw denial payload, in the user's face. A refusal from the deciding service now
-          // gets its own panel; the rest still goes through the presenter seam.
           const state = resolveJoinError(await readApiFailure(r, "/api/bots"));
           if (state.kind === "denial") { setDenial(state.presentation); setMsg(null); }
           else setMsg(state.headline);
@@ -188,18 +185,55 @@ function DropBotInline() {
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div style={{ display: "flex", gap: 6 }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        background: "var(--panel)",
+        border: "1px solid var(--line2)",
+        borderRadius: 8,
+        padding: "3px 4px 3px 10px",
+        gap: 8,
+        boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+      }}>
+        <Icon name="video" size={14} style={{ color: "var(--t3)", flex: "none" }} />
         <input value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void send(); }}
-          placeholder="Paste a meeting link (Meet / Zoom / Teams / Jitsi)…" style={fieldStyle} />
+          placeholder="Paste a meeting link (Meet / Zoom / Teams / Jitsi)…"
+          style={{
+            flex: 1, minWidth: 0, background: "transparent", border: "none", color: "var(--t1)",
+            fontSize: 12.5, outline: "none", padding: "4px 0"
+          }} />
         <button onClick={() => void send()} disabled={!url.trim() || sent === "sending"}
-          style={{ flex: "none", background: url.trim() ? "var(--accent)" : "var(--panel2)", color: url.trim() ? "var(--on-accent)" : "var(--t3)", border: "none", borderRadius: 7, padding: "0 10px", fontSize: 12, fontWeight: 600, cursor: url.trim() ? "pointer" : "default" }}>
+          style={{
+            flex: "none",
+            background: url.trim() ? "var(--green)" : "var(--panel2)",
+            color: url.trim() ? "var(--on-green)" : "var(--t3)",
+            border: "none",
+            borderRadius: 6,
+            padding: "5px 12px",
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: url.trim() ? "pointer" : "default",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            transition: "background 0.15s ease",
+          }}>
+          <Icon name="send" size={12} />
           {sent === "sending" ? "…" : "Send bot"}
         </button>
       </div>
-      {sent === "ok" && <div style={{ fontSize: 11, color: "var(--green)", lineHeight: 1.4 }}>Bot sent — admit it in the meeting.</div>}
+      {sent === "ok" && (
+        <div style={{ fontSize: 11.5, color: "var(--green)", lineHeight: 1.4, display: "flex", alignItems: "center", gap: 5 }}>
+          <Icon name="check" size={12} /> Bot sent — admit it in the meeting; it appears here once it starts transcribing.
+        </div>
+      )}
       {denial
         ? <ServiceDenialPanel presentation={denial} onRetry={() => void send()} />
-        : sent === "err" && msg && <div role="alert" style={{ fontSize: 11, color: "var(--danger)", lineHeight: 1.4 }}>⚠ {msg}</div>}
+        : sent === "err" && msg && (
+          <div role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.4, display: "flex", alignItems: "center", gap: 5 }}>
+            <Icon name="alert" size={12} /> {msg}
+          </div>
+        )}
     </div>
   );
 }
@@ -208,33 +242,85 @@ export function MeetingsOnboarding({ variant }: { variant: "full" | "slim" }) {
   const [connected, reprobe] = useCalendarConnected();
   const [modal, setModal] = useState(false);
   const layout = useService(LayoutServiceId);
-  // "+ Plan a meeting" opens a DRAFT prep tab — no backend row until the user fills something in, so
-  // an abandoned draft leaves no empty meeting behind (the prep tab creates the row lazily).
   const plan = () => layout.openTab(prepDraftTabDescriptor());
 
-  // slim = the STANDING affordances on a populated Meetings page: plan + drop-bot are ALWAYS
-  // available (owner ruling 2026-07-09); the calendar card additionally shows while this user
-  // has no calendar connected.
   if (variant === "slim") {
     return (
       <>
         {connected === false && (
-          <div style={{ ...cardBase, flexDirection: "row", alignItems: "center", gap: 10, marginTop: 12 }}>
-            <Icon name="cal" size={15} style={{ color: "var(--t3)", flex: "none" }} />
-            <span style={{ ...cardBody, flex: 1 }}>
-              <b style={{ color: "var(--t2)" }}>No calendar connected</b> — connect your calendar&rsquo;s secret
-              ICS feed and scheduled meetings appear here by themselves; with auto-join on, the bot joins when
-              they start.
+          <div style={{
+            ...cardBase,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 12,
+            marginTop: 12,
+            background: "var(--panel)",
+            border: "1px solid var(--line2)",
+            borderRadius: 10,
+            padding: "12px 16px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.02)",
+          }}>
+            <div style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: "var(--greenbg)",
+              color: "var(--green)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flex: "none",
+            }}>
+              <Icon name="cal" size={16} />
+            </div>
+            <span style={{ ...cardBody, flex: 1, fontSize: 12 }}>
+              <b style={{ color: "var(--t1)" }}>No calendar connected</b> — connect your calendar&rsquo;s secret
+              ICS feed and scheduled meetings appear here by themselves.
             </span>
-            <button style={{ ...cta, flex: "none" }} onClick={() => setModal(true)}>Connect calendar →</button>
+            <button
+              style={{
+                ...cta,
+                flex: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                background: "var(--greenbg)",
+                color: "var(--green)",
+                padding: "6px 12px",
+                borderRadius: 7,
+              }}
+              onClick={() => setModal(true)}
+            >
+              Connect calendar →
+            </button>
           </div>
         )}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-          <button onClick={() => plan()}
-            style={{ flex: "none", background: "transparent", border: "1px dashed var(--line2)", color: "var(--t2)", borderRadius: 7, padding: "7px 11px", fontSize: 12, cursor: "pointer" }}>
-            + Plan a meeting
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+          <button
+            onClick={() => plan()}
+            style={{
+              flex: "none",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              background: "var(--panel)",
+              border: "1px solid var(--line2)",
+              color: "var(--t1)",
+              borderRadius: 8,
+              padding: "8px 14px",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--panel2)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--panel)"; }}
+          >
+            <Icon name="plus" size={13} style={{ color: "var(--green)" }} />
+            Plan a meeting
           </button>
-          <div style={{ flex: 1, minWidth: 220 }}><DropBotInline /></div>
+          <div style={{ flex: 1, minWidth: 260 }}><DropBotInline /></div>
         </div>
         {modal && <ConnectCalendarModal onClose={() => setModal(false)} onConnected={reprobe} />}
       </>

@@ -1036,6 +1036,10 @@ def build(reg: Registry, db) -> None:
         Reads: refs.{uid,organizer,title,meeting_id} · Effect: one notification."""
         if not setting(ctx.refs["uid"], "mail_minutes"):
             return Done({"skipped": "mail_minutes is off for this person"})
+        organizer = (ctx.refs.get("organizer") or "").lower().strip()
+        whitelist_set = _get_effective_email_whitelist(ctx)
+        if whitelist_set and not _is_whitelisted_email(organizer, whitelist_set):
+            return Done({"skipped": "organizer not in email whitelist", "to": organizer})
         # THE ONE ARTEFACT, off the receipt. It used to be re-read out of the organiser's desk
         # (`ws_file(uid, note_path)`), which no longer holds it — the run writes into no desk, so
         # `process_meeting`'s reply IS the report and the receipt is where it lives. The commit sha
@@ -1228,12 +1232,73 @@ def build(reg: Registry, db) -> None:
             return 12
         return n if n > 0 else 12
 
+    def _is_whitelisted_email(email: str, whitelist_set: set) -> bool:
+        if not whitelist_set:
+            return True
+        if not email:
+            return False
+        email = email.lower().strip()
+        if email in whitelist_set:
+            return True
+        domain = email.split("@")[-1] if "@" in email else ""
+        if domain and (f"@{domain}" in whitelist_set or domain in whitelist_set):
+            return True
+        return False
+
+    def _get_effective_email_whitelist(ctx) -> set:
+        """Effective email whitelist: flow param / env var + admin-api database setting + registered platform users."""
+        import json
+        import os
+        import urllib.request
+        env_val = (ctx.flow.param("email_whitelist") if ctx.flow else None) or \
+            os.environ.get("VEXA_FLOWS_EMAIL_WHITELIST", "")
+        whitelist = {e.strip().lower() for e in env_val.split(",") if e.strip()}
+        admin_url = os.environ.get("VEXA_FLOWS_ADMIN_API_URL") or os.environ.get("ADMIN_API_URL")
+        secret = os.environ.get("INTERNAL_API_SECRET") or os.environ.get("VEXA_FLOWS_ADMIN_KEY")
+        if admin_url and secret:
+            try:
+                req = urllib.request.Request(
+                    f"{admin_url.rstrip('/')}/internal/settings/whitelist",
+                    headers={"X-Internal-Secret": secret},
+                )
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode())
+                        db_emails = (data.get("value") or {}).get("emails") or ""
+                        whitelist.update(e.strip().lower() for e in db_emails.split(",") if e.strip())
+            except Exception:
+                pass
+            try:
+                req = urllib.request.Request(
+                    f"{admin_url.rstrip('/')}/internal/users/emails",
+                    headers={"X-Internal-Secret": secret},
+                )
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode())
+                        user_emails = data.get("emails") or []
+                        whitelist.update(e.strip().lower() for e in user_emails if e)
+            except Exception:
+                pass
+        return whitelist
+
     def _attendees(ctx) -> list:
         """Inside-domain attendees, minus the organizer. PRD §16.2: outside the domain, NEVER —
         so an unset allow-list means the organizer's own domain, not everyone."""
         import os
         org = (ctx.refs.get("organizer") or "").lower()
         raw = ctx.refs.get("participants") or []
+        whitelist_set = _get_effective_email_whitelist(ctx)
+        if whitelist_set:
+            out = []
+            for a in raw:
+                a = str(a).strip().lower()
+                if "@" not in a or a == org or a in out:
+                    continue
+                if _is_whitelisted_email(a, whitelist_set):
+                    out.append(a)
+            return out
+
         allow = (ctx.flow.param("attendee_domains") if ctx.flow else None) or \
             [d for d in os.environ.get("VEXA_FLOWS_ATTENDEE_DOMAINS", "").split(",") if d] or \
             ([org.split("@")[-1]] if "@" in org else [])

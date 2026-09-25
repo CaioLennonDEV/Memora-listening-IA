@@ -141,8 +141,6 @@ function useOwnWorkspaceTree(): string[] | null {
 // ── rendering ─────────────────────────────────────────────────────────────────────────────────
 const label = (m: MeetingMock) => m.title_custom ?? (m.native_id ?? m.title).replace(/^Google Meet · /, "");
 
-const toneColor = { live: "var(--green)", danger: "var(--danger)", accent: "var(--accent)" } as const;
-
 function timeShort(at?: string): string {
   if (!at) return "no time set";
   try { return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
@@ -151,24 +149,37 @@ function timeShort(at?: string): string {
 
 function Faces({ m }: { m: MeetingMock }) {
   const att = (m.attendees ?? []).slice(0, 3);
-  if (!att.length) return null;
+  if (!att.length) {
+    return (
+      <div style={{
+        width: 22, height: 22, borderRadius: "50%", background: "var(--panel2)",
+        display: "flex", alignItems: "center", justifyContent: "center", color: "var(--t3)", flex: "none"
+      }}>
+        <Icon name="user" size={12} />
+      </div>
+    );
+  }
   const extra = (m.attendees?.length ?? 0) - att.length;
   const initials = (a: { email: string; name?: string }) =>
     (a.name ? a.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join("") : a.email.slice(0, 2)).toUpperCase();
   return (
-    <span style={{ display: "inline-flex", flex: "none" }}>
+    <span style={{ display: "inline-flex", alignItems: "center", flex: "none" }}>
       {att.map((a, i) => (
         <span key={a.email} title={a.name || a.email}
-          style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--panel2)", color: "var(--t2)",
-            display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700,
-            border: "2px solid var(--bg)", marginLeft: i ? -6 : 0 }}>
+          style={{
+            width: 22, height: 22, borderRadius: "50%", background: "var(--green)", color: "var(--on-green)",
+            display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700,
+            border: "2px solid var(--panel)", marginLeft: i ? -7 : 0, boxShadow: "0 1px 2px rgba(0,0,0,0.06)"
+          }}>
           {initials(a)}
         </span>
       ))}
       {extra > 0 && (
-        <span style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--panel2)", color: "var(--t3)",
-          display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700,
-          border: "2px solid var(--bg)", marginLeft: -6 }}>+{extra}</span>
+        <span style={{
+          width: 22, height: 22, borderRadius: "50%", background: "var(--panel2)", color: "var(--t2)",
+          display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700,
+          border: "2px solid var(--panel)", marginLeft: -7
+        }}>+{extra}</span>
       )}
     </span>
   );
@@ -180,41 +191,160 @@ function EventRow({ g, ownTree }: { g: MeetingGroup; ownTree: string[] | null })
   const hasOwnBrief = !m.workspace_id && !!ownTree
     && !!findBriefNote(ownTree, { title: label(m), nativeId: m.native_id });
   const dev = deviationPhrase(g, hasOwnBrief);
+  const isLive = g.phase === "live";
+
   return (
-    <div onClick={nav.onClick} onDoubleClick={nav.onDoubleClick}
-      style={{ display: "flex", alignItems: "baseline", gap: 9, padding: "3px 2px", cursor: "pointer", flexWrap: "wrap" }}>
-      <span style={{ width: 3, height: 14, borderRadius: 2, alignSelf: "center", flex: "none",
-        background: g.phase === "live" ? "var(--green)" : "var(--panel2)" }} />
-      <span style={{ fontSize: 13.5, fontWeight: 500, color: "var(--t1)", minWidth: 0,
-        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label(m)}</span>
-      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--t3)", flex: "none" }}>{timeShort(m.scheduled_at)}</span>
-      {dev && (
-        <span style={{ fontSize: 12, color: toneColor[dev.tone], borderBottom: `1px dotted ${toneColor[dev.tone]}`, flex: "none" }}>
-          {dev.text}
+    <div
+      onClick={nav.onClick}
+      onDoubleClick={nav.onDoubleClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "8px 12px",
+        borderRadius: 8,
+        cursor: "pointer",
+        background: isLive ? "var(--greenbg)" : "transparent",
+        border: isLive ? "1px solid var(--green)" : "1px solid transparent",
+        transition: "all 0.15s ease",
+      }}
+      onMouseEnter={(e) => {
+        if (!isLive) e.currentTarget.style.background = "var(--panel2)";
+      }}
+      onMouseLeave={(e) => {
+        if (!isLive) e.currentTarget.style.background = "transparent";
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
+        <div style={{
+          width: 26,
+          height: 26,
+          borderRadius: 6,
+          background: isLive ? "var(--green)" : "var(--panel2)",
+          color: isLive ? "var(--on-green)" : "var(--t2)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flex: "none",
+        }}>
+          <Icon name="video" size={13} />
+        </div>
+        <span style={{
+          fontSize: 13.5,
+          fontWeight: 600,
+          color: "var(--t1)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap"
+        }}>
+          {label(m)}
         </span>
-      )}
+        {dev && (
+          <span style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            color: dev.tone === "live" ? "var(--green)" : dev.tone === "danger" ? "var(--danger)" : "var(--accent)",
+            background: dev.tone === "live" ? "var(--greenbg)" : dev.tone === "danger" ? "var(--dangerbg)" : "var(--accentbg)",
+            padding: "2px 8px",
+            borderRadius: 6,
+            flex: "none"
+          }}>
+            {dev.tone === "danger" && <Icon name="alert" size={11} />}
+            {dev.text}
+          </span>
+        )}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flex: "none" }}>
+        <span style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "3px 8px",
+          borderRadius: 6,
+          background: "var(--panel2)",
+          fontFamily: "var(--mono)",
+          fontSize: 11,
+          color: "var(--t2)",
+          fontWeight: 500,
+        }}>
+          <Icon name="clock" size={11} style={{ color: "var(--t3)" }} />
+          {timeShort(m.scheduled_at)}
+        </span>
+      </div>
     </div>
   );
 }
 
 function DayRow({ day, isToday, ownTree }: { day: AgendaDay; isToday: boolean; ownTree: string[] | null }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "64px 1fr", gap: "0 14px", padding: "11px 14px",
-      borderTop: "1px dashed var(--line)" }}>
-      <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
-        <span style={{ fontSize: 19, fontWeight: 600, color: "var(--t1)", fontVariantNumeric: "tabular-nums" }}>
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "68px 1fr",
+      gap: "0 16px",
+      padding: "12px 16px",
+      borderTop: "1px solid var(--line)",
+      alignItems: "center",
+    }}>
+      <div style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "6px 4px",
+        borderRadius: 8,
+        background: isToday ? "var(--greenbg)" : "var(--panel2)",
+        border: isToday ? "1px solid var(--green)" : "1px solid var(--line)",
+        textAlign: "center",
+      }}>
+        <span style={{
+          fontSize: 19,
+          fontWeight: 700,
+          color: isToday ? "var(--green)" : "var(--t1)",
+          fontVariantNumeric: "tabular-nums",
+          lineHeight: 1
+        }}>
           {day.date.getDate()}
         </span>
-        <span style={{ fontSize: 10, color: "var(--t3)", lineHeight: 1.3 }}>
-          {day.date.toLocaleString(undefined, { month: "long" })}
-          {isToday && <span style={{ display: "inline-block", width: 4, height: 4, borderRadius: "50%", background: "var(--accent)", marginLeft: 3, verticalAlign: 4 }} />}
-          <br />{day.date.toLocaleString(undefined, { weekday: "short" })}
+        <span style={{
+          fontSize: 9.5,
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+          color: isToday ? "var(--green)" : "var(--t3)",
+          marginTop: 3,
+          lineHeight: 1
+        }}>
+          {day.date.toLocaleString(undefined, { month: "short" })}
         </span>
+        {isToday ? (
+          <span style={{
+            fontSize: 8.5,
+            fontWeight: 800,
+            letterSpacing: "0.05em",
+            color: "var(--green)",
+            marginTop: 2
+          }}>
+            HOJE
+          </span>
+        ) : (
+          <span style={{ fontSize: 9, color: "var(--t3)", marginTop: 2 }}>
+            {day.date.toLocaleString(undefined, { weekday: "short" })}
+          </span>
+        )}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-        {day.groups.length === 0
-          ? <span style={{ fontSize: 12.5, color: "var(--t3)", padding: "2px 0" }}>No events today</span>
-          : day.groups.map((g) => <EventRow key={g.key} g={g} ownTree={ownTree} />)}
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+        {day.groups.length === 0 ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 8px", color: "var(--t3)", fontSize: 12.5 }}>
+            <Icon name="cal" size={13} style={{ opacity: 0.6 }} />
+            No events today
+          </div>
+        ) : (
+          day.groups.map((g) => <EventRow key={g.key} g={g} ownTree={ownTree} />)
+        )}
       </div>
     </div>
   );
@@ -231,7 +361,7 @@ function PastLine({ m }: { m: MeetingMock }) {
         if (t.notes.length) setLine(`${t.notes.length} notes`);
         else if (t.lines?.length) setLine(`${t.lines.length} lines`);
       })
-      .catch(() => {});
+      .catch(() => { });
     return () => { on = false; };
   }, [m.id, m.has_recording]);
   const dur = (() => {
@@ -250,26 +380,84 @@ function PastRow({ e, reviewedIds }: { e: PastEntry; reviewedIds: Set<string> })
   const open = () => { markReviewed(run.id); layout.openTab(meetingTab(run)); };
   const unreviewed = !reviewedIds.has(run.id);
   const phrase = run.has_recording
-    ? (unreviewed ? { text: "recap ready", color: "var(--accent)" } : null)
-    : { text: "nothing captured", color: "var(--t3)" };
+    ? (unreviewed ? { text: "recap ready", color: "var(--green)", bg: "var(--greenbg)", icon: "spark" } : null)
+    : { text: "nothing captured", color: "var(--t3)", bg: "var(--panel2)", icon: null };
+
   return (
-    <div onClick={open}
-      style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10,
-        padding: "6px 8px", borderRadius: 7, cursor: "pointer" }}
-      onMouseEnter={(ev) => (ev.currentTarget.style.background = "var(--panel)")}
-      onMouseLeave={(ev) => (ev.currentTarget.style.background = "transparent")}>
-      <Faces m={run.attendees?.length ? run : e.group.current} />
-      <span style={{ display: "flex", gap: 9, alignItems: "baseline", minWidth: 0, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, fontWeight: 500, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+    <div
+      onClick={open}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "10px 14px",
+        margin: "4px 0",
+        borderRadius: 9,
+        background: "var(--panel)",
+        border: "1px solid var(--line)",
+        cursor: "pointer",
+        transition: "all 0.15s ease",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+      }}
+      onMouseEnter={(ev) => {
+        ev.currentTarget.style.background = "var(--panel2)";
+        ev.currentTarget.style.borderColor = "var(--line2)";
+        ev.currentTarget.style.transform = "translateX(2px)";
+      }}
+      onMouseLeave={(ev) => {
+        ev.currentTarget.style.background = "var(--panel)";
+        ev.currentTarget.style.borderColor = "var(--line)";
+        ev.currentTarget.style.transform = "none";
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
+        <Faces m={run.attendees?.length ? run : e.group.current} />
+        <span style={{
+          fontSize: 13.5,
+          fontWeight: 600,
+          color: "var(--t1)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap"
+        }}>
           {label(run)}
         </span>
         {phrase && (
-          <span style={{ fontSize: 11.5, color: phrase.color, borderBottom: `1px dotted ${phrase.color}`, flex: "none" }}>
+          <span style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            color: phrase.color,
+            background: phrase.bg,
+            padding: "2px 8px",
+            borderRadius: 6,
+            flex: "none",
+          }}>
+            {phrase.icon && <Icon name={phrase.icon} size={11} />}
             {phrase.text}
           </span>
         )}
-      </span>
-      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--t3)", flex: "none" }}><PastLine m={run} /></span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flex: "none" }}>
+        <span style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "3px 9px",
+          borderRadius: 6,
+          background: "var(--panel2)",
+          fontFamily: "var(--mono)",
+          fontSize: 11.5,
+          color: "var(--t2)",
+          fontWeight: 500,
+        }}>
+          <Icon name="clock" size={11} style={{ color: "var(--t3)" }} />
+          <PastLine m={run} />
+        </span>
+      </div>
     </div>
   );
 }
@@ -286,51 +474,121 @@ function TodayView() {
   const past = pastFeed(groups);
   const todayKey = dayKey(now);
   const empty = meetings.length === 0;
-  const pager = { background: "none", border: "1px solid var(--line)", color: "var(--t2)", borderRadius: 6,
-    width: 24, height: 24, cursor: "pointer", fontSize: 13, lineHeight: 1 } as const;
+  const pager = {
+    background: "var(--panel)", border: "1px solid var(--line2)", color: "var(--t2)", borderRadius: 6,
+    width: 26, height: 26, cursor: "pointer", fontSize: 13, lineHeight: 1, display: "inline-flex",
+    alignItems: "center", justifyContent: "center", transition: "background 0.15s ease"
+  } as const;
+
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: "18px 22px" }}>
-      <div style={{ maxWidth: 720 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 17, fontWeight: 700, color: "var(--t1)", flex: 1 }}>Coming up</span>
-          {weekOffset > 0 && (
-            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--t3)" }}>
-              {days[0]?.date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) ?? ""} →
+    <div style={{ height: "100%", overflowY: "auto", padding: "24px 28px" }}>
+      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 32, height: 32, borderRadius: 8, background: "var(--greenbg)",
+              color: "var(--green)", display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+              <Icon name="cal" size={16} />
+            </div>
+            <span style={{ fontSize: 18, fontWeight: 700, color: "var(--t1)", letterSpacing: "-0.01em" }}>
+              A seguir
             </span>
-          )}
-          <button aria-label="previous week" style={{ ...pager, opacity: weekOffset === 0 ? 0.4 : 1 }}
-            disabled={weekOffset === 0} onClick={() => setWeekOffset((v) => Math.max(0, v - 1))}>‹</button>
-          <button aria-label="next week" style={pager} onClick={() => setWeekOffset((v) => Math.min(8, v + 1))}>›</button>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {weekOffset > 0 && (
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--t3)", padding: "0 6px" }}>
+                {days[0]?.date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) ?? ""} →
+              </span>
+            )}
+            <button
+              aria-label="previous week"
+              style={{ ...pager, opacity: weekOffset === 0 ? 0.35 : 1 }}
+              disabled={weekOffset === 0}
+              onClick={() => setWeekOffset((v) => Math.max(0, v - 1))}
+            >
+              ‹
+            </button>
+            <button
+              aria-label="next week"
+              style={pager}
+              onClick={() => setWeekOffset((v) => Math.min(8, v + 1))}
+            >
+              ›
+            </button>
+          </div>
         </div>
 
         {empty ? (
-          /* user onboarding, frame 4: three paths (calendar primary / plan / drop bot) */
           <MeetingsOnboarding variant="full" />
         ) : (
           <>
-            {/* the STANDING calendar affordance — stays while this user has no calendar connected */}
             <MeetingsOnboarding variant="slim" />
-            <div style={{ marginTop: 14, border: "1px solid var(--line)", borderRadius: 12, background: "var(--panel)" }}>
+            <div style={{
+              marginTop: 14,
+              border: "1px solid var(--line)",
+              borderRadius: 12,
+              background: "var(--panel)",
+              overflow: "hidden",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.02)"
+            }}>
               {days.length === 0
-                ? <div style={{ padding: "14px 16px", fontSize: 12.5, color: "var(--t3)" }}>Nothing this week.</div>
+                ? <div style={{ padding: "16px 18px", fontSize: 12.5, color: "var(--t3)" }}>Nothing this week.</div>
                 : days.map((d) => <DayRow key={d.key} day={d} isToday={d.key === todayKey} ownTree={ownTree} />)}
             </div>
           </>
         )}
 
-        {past.map((day) => (
-          <div key={day.key}>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase",
-              color: "var(--t3)", margin: "18px 0 4px" }}>
-              {day.date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}
-            </div>
-            {day.entries.map((e) => <PastRow key={e.run.id} e={e} reviewedIds={reviewedIds} />)}
+        {past.length > 0 && (
+          <div style={{ marginTop: 28 }}>
+            {past.map((day) => (
+              <div key={day.key} style={{ marginBottom: 16 }}>
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  margin: "18px 0 8px"
+                }}>
+                  <span style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    letterSpacing: ".05em",
+                    textTransform: "uppercase",
+                    color: "var(--t3)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6
+                  }}>
+                    <Icon name="cal" size={12} />
+                    {day.date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}
+                  </span>
+                  <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
+                </div>
+                {day.entries.map((e) => <PastRow key={e.run.id} e={e} reviewedIds={reviewedIds} />)}
+              </div>
+            ))}
           </div>
-        ))}
+        )}
 
         {!empty && (
-          <div style={{ fontSize: 11.5, color: "var(--t3)", margin: "24px 2px 10px", lineHeight: 1.5 }}>
-            Older meetings live in Knowledge — ask the agent about anything that was said or decided.
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "12px 16px",
+            borderRadius: 8,
+            background: "var(--panel)",
+            border: "1px solid var(--line)",
+            fontSize: 12,
+            color: "var(--t3)",
+            margin: "28px 0 16px",
+            lineHeight: 1.5
+          }}>
+            <Icon name="info" size={15} style={{ color: "var(--t2)", flex: "none" }} />
+            <span>
+              Reuniões anteriores ficam armazenadas na Base de Conhecimento — pergunte ao agente sobre qualquer coisa que tenha sido dita ou decidida.
+            </span>
           </div>
         )}
       </div>

@@ -43,7 +43,7 @@ function ShareSessionButton({ platform, native }: { platform: string; native: st
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    void listSharedMemberships().then((ms) => setShares(ms.filter((m) => m.role === "owner" || m.role === "contributor"))).catch(() => {});
+    void listSharedMemberships().then((ms) => setShares(ms.filter((m) => m.role === "owner" || m.role === "contributor"))).catch(() => { });
     const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
@@ -200,34 +200,36 @@ function ConnectedPanel({ native, docs }: { native: string; docs?: ConnectedDoc[
     const path = `kg/entities/meeting/${native}.md`;
     void (async () => {
       try {
-        const r = await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`);
+        const treeRes = await fetch(`/api/workspace/tree`);
         if (!alive) return;
-        if (!r.ok) { setState({ status: "absent", title: "", links: [] }); return; }
-        const content: string = (await r.json()).content ?? "";
-        const fmTitle = content.match(/^---\n([\s\S]*?)\n---/)?.[1]?.split("\n").find((l) => l.startsWith("title:"))?.slice(6).trim();
-        const h1 = content.match(/^#\s+(.+)$/m)?.[1]?.trim();
-        const title = (fmTitle || h1 || native).replace(/^["']|["']$/g, "");
-        const links = [...new Set([...content.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1].trim()).filter(Boolean))];
-        setState({ status: "present", title, links });
-      } catch { if (alive) setState({ status: "absent", title: "", links: [] }); }
+        if (treeRes.ok) {
+          const treeData = await treeRes.json();
+          const files: string[] = treeData.files ?? [];
+          const map: Record<string, string> = {};
+          for (const f of files) if (f.startsWith("kg/entities/") && f.endsWith(".md")) map[baseName(f).replace(/\.md$/, "")] = f;
+          setSlugMap(map);
+
+          if (files.includes(path)) {
+            const r = await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`);
+            if (!alive) return;
+            if (r.ok) {
+              const content: string = (await r.json()).content ?? "";
+              const fmTitle = content.match(/^---\n([\s\S]*?)\n---/)?.[1]?.split("\n").find((l) => l.startsWith("title:"))?.slice(6).trim();
+              const h1 = content.match(/^#\s+(.+)$/m)?.[1]?.trim();
+              const title = (fmTitle || h1 || native).replace(/^["']|["']$/g, "");
+              const links = [...new Set([...content.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1].trim()).filter(Boolean))];
+              setState({ status: "present", title, links });
+              return;
+            }
+          }
+        }
+        setState({ status: "absent", title: "", links: [] });
+      } catch {
+        if (alive) setState({ status: "absent", title: "", links: [] });
+      }
     })();
     return () => { alive = false; };
   }, [native]);
-
-  // load the tree once so wikilink slugs resolve to their real entity doc paths
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        const files: string[] = (await (await fetch(`/api/workspace/tree`)).json()).files ?? [];
-        if (!alive) return;
-        const map: Record<string, string> = {};
-        for (const f of files) if (f.startsWith("kg/entities/") && f.endsWith(".md")) map[baseName(f).replace(/\.md$/, "")] = f;
-        setSlugMap(map);
-      } catch { /* offline — keep wikilinks on the meeting doc */ }
-    })();
-    return () => { alive = false; };
-  }, []);
 
   if (hasDocs) return <ConnectedDocsPanel docs={docs!} />;
   if (state.status === "loading") return null;
@@ -781,10 +783,9 @@ function MeetingsList() {
   );
 }
 
-// ── Meeting COPILOT tab (center) — meeting shell + canvas ──────────────────────────
-type ModelInfo = { chat_model?: string; streaming_model?: string; agent_model?: string; meeting_model?: string };
+export type ModelInfo = { chat_model?: string; streaming_model?: string; agent_model?: string; meeting_model?: string };
 
-function useModelInfo(): ModelInfo | null {
+export function useModelInfo(): ModelInfo | null {
   const [models, setModels] = useState<ModelInfo | null>(null);
   useEffect(() => {
     let alive = true;
@@ -802,18 +803,18 @@ function useModelInfo(): ModelInfo | null {
   return models;
 }
 
-function ModelChips() {
+export function ModelChips() {
   const models = useModelInfo();
   const streaming = models?.streaming_model || models?.meeting_model || "streaming";
   const chat = models?.chat_model || models?.agent_model || "chat";
   const chip = (label: string, value: string) => (
-    <span title={`${label} model: ${value}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 8px", border: "1px solid var(--line)", borderRadius: 7, color: "var(--t2)", background: "var(--panel)", fontSize: 11.5, whiteSpace: "nowrap", minWidth: 0 }}>
-      <span style={{ color: "var(--t3)", fontFamily: "var(--mono)", flex: "none" }}>{label}</span>
-      <span style={{ color: "var(--t1)", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{value}</span>
+    <span title={`${label} model: ${value}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 8px", border: "1px solid var(--line2)", borderRadius: 7, color: "var(--t2)", background: "var(--panel)", fontSize: 11.5, whiteSpace: "nowrap", minWidth: 0 }}>
+      <span style={{ color: "var(--t3)", fontFamily: "var(--mono)", flex: "none", fontSize: 10 }}>{label}</span>
+      <span style={{ color: "var(--t1)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, fontWeight: 500 }}>{value}</span>
     </span>
   );
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", minWidth: 0 }}>
       {chip("stream", streaming)}
       {chip("chat", chat)}
     </div>
@@ -846,11 +847,13 @@ export function BotControls({ m, connected = true }: { m: MeetingMock; connected
               setErr(null); setBusy(true);
               void Promise.resolve(a.run((f) => setErr(f.message))).finally(() => setBusy(false));
             }}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "transparent",
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 6, background: "transparent",
               border: `1px solid ${danger ? "var(--danger)" : "var(--line2)"}`,
               color: danger ? "var(--danger)" : "var(--accent)",
               borderRadius: 7, padding: "4px 11px", fontSize: 12, fontWeight: 600,
-              cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }}>
+              cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1
+            }}>
             {a.id === "stop" ? "Stop bot" : "Send bot again"}
           </button>
         );
@@ -917,9 +920,12 @@ function MeetingTab({ params }: TabProps) {
   const m = liveList.find((x) => x.id === requestedMeetingId || x.native_id === requestedMeetingId);
   const header = meetingHeaderState(m, connected);
   const live = useMeetingLive(m?.id ?? "", m?.session_uid ?? "");
-  const roomLabel = live.roster
-    ? `${live.roster.humans} in the room`
-    : "— in the room";
+  const isEnded = header === "recap" || m?.status === "past" || m?.live_status === "completed" || m?.live_status === "failed";
+  const roomLabel = isEnded
+    ? "Sala finalizada"
+    : header === "live"
+      ? `${live.roster?.humans ?? 1} na sala`
+      : "Conectando à sala...";
 
   // An unknown id — a stale/foreign/mistyped meeting URL — is a clean dead end, never a crash and never
   // an endless "Connecting…". Only once the list has actually answered (P0: an offline list keeps
@@ -953,7 +959,6 @@ function MeetingTab({ params }: TabProps) {
           <div style={{ flex: 1 }} />
           {m && <BotControls m={m} connected={connected} />}
           {m?.native_id && <ShareSessionButton platform={platformSlug(m.platform)} native={m.native_id} />}
-          <ModelChips />
         </div>
       </header>
       <div style={{ flex: 1, minHeight: 0 }}>
@@ -963,8 +968,10 @@ function MeetingTab({ params }: TabProps) {
   );
 }
 
-registerList({ id: "meetings", label: "Meetings", icon: "cal", order: 20, component: MeetingsList,
+registerList({
+  id: "meetings", label: "Meetings", icon: "cal", order: 20, component: MeetingsList,
   // clicking Meetings opens the user's DAY in the center (design-spec meeting-lifecycle-v2, W2)
-  centerTab: { id: "today", title: "Today", kind: "today", params: {} } });
+  centerTab: { id: "today", title: "Today", kind: "today", params: {} }
+});
 registerTab("meeting", MeetingTab);
 registerCommand({ id: "meeting.openLive", title: "Open live meeting", run: ({ container }) => { const m = liveMeetingsNow()[0]; if (m) container.get(LayoutServiceId).openTab(meetingTab(m)); } });

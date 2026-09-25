@@ -5,6 +5,7 @@
   <style>
     /* Light palette (default). --radius is theme-independent. */
     :root {
+      color-scheme: light;
       --background: #ffffff;
       --foreground: #252525;
       --muted: #f7f7f7;
@@ -12,30 +13,6 @@
       --border: #ebebeb;
       --destructive: #d4183d;
       --radius: 10px;
-    }
-    /* Dark palette, reused by both auto (OS) and the manual override. */
-    :root[data-theme="dark"],
-    :root[data-theme="system"] {
-      color-scheme: dark light;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) {
-        --background: #252525;
-        --foreground: #fbfbfb;
-        --muted: #2f2f2f;
-        --muted-foreground: #b5b5b5;
-        --border: #3a3a3a;
-        --destructive: #ff6467;
-      }
-    }
-    /* Manual override: force dark regardless of OS setting. */
-    :root[data-theme="dark"] {
-      --background: #252525;
-      --foreground: #fbfbfb;
-      --muted: #2f2f2f;
-      --muted-foreground: #b5b5b5;
-      --border: #3a3a3a;
-      --destructive: #ff6467;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -138,7 +115,6 @@
     <span class="name">Memora</span>
     <span id="buildHeader" style="font-size: 10px; color: var(--muted-foreground); font-family: ui-monospace, monospace;"></span>
     <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">Idle</span></span>
-    <button class="icon-btn" id="themeBtn" aria-label="Theme" title="Theme: System">&#9788;</button>
     <button class="icon-btn" id="gearBtn" aria-label="Settings">&#9881;</button>
   </div>
 

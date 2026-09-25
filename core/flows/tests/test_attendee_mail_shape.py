@@ -350,3 +350,48 @@ def test_the_baked_defaults_match_the_files_in_behavior_mail():
         assert f.is_file(), f"{f} is missing — the baked default has no source to be edited in"
         assert f.read_text().strip() == baked.strip(), (
             f"{f} and mailtext.DEFAULTS[{name!r}] have drifted apart")
+
+
+def test_email_whitelist_filters_attendees_only_to_whitelisted(monkeypatch):
+    """When VEXA_FLOWS_EMAIL_WHITELIST is set, only attendees in the whitelist receive emails."""
+    monkeypatch.setenv("VEXA_FLOWS_EMAIL_WHITELIST", "ben@bank.test,other@bank.test")
+    reg, ch = _rig(monkeypatch)
+    refs = dict(REFS, participants=["anna@bank.test", "ben@bank.test", "cara@bank.test"])
+    out = reg.steps["email_attendees"](_ctx(refs, PRIOR))
+
+    assert out.result["sent"] == 1
+    assert [m["to"] for m in ch.sent] == ["ben@bank.test"]
+
+
+def test_email_whitelist_skips_when_no_whitelisted_attendee_in_meeting(monkeypatch):
+    """When no attendees are in the whitelist, email_attendees sends 0 mails."""
+    monkeypatch.setenv("VEXA_FLOWS_EMAIL_WHITELIST", "isabella@unimed.test")
+    reg, ch = _rig(monkeypatch)
+    refs = dict(REFS, participants=["anna@bank.test", "ben@bank.test", "cara@bank.test"])
+    out = reg.steps["email_attendees"](_ctx(refs, PRIOR))
+
+    assert out.result["sent"] == 0
+    assert len(ch.sent) == 0
+
+
+def test_email_whitelist_filters_organizer_in_email_minutes(monkeypatch):
+    """When VEXA_FLOWS_EMAIL_WHITELIST is set and organizer is not in it, email_minutes skips."""
+    monkeypatch.setenv("VEXA_FLOWS_EMAIL_WHITELIST", "isabella@unimed.test")
+    reg, ch = _rig(monkeypatch)
+    out = reg.steps["email_minutes"](_ctx(dict(REFS), PRIOR))
+
+    assert out.result.get("skipped") == "organizer not in email whitelist"
+    assert len(ch.sent) == 0
+
+
+def test_email_whitelist_domain_matching(monkeypatch):
+    """When whitelist contains '@unimed.test' or 'unimed.test', all attendees with that domain match."""
+    monkeypatch.setenv("VEXA_FLOWS_EMAIL_WHITELIST", "@unimed.test")
+    reg, ch = _rig(monkeypatch)
+    refs = dict(REFS, participants=["anna@unimed.test", "ben@external.test", "cara@unimed.test"])
+    out = reg.steps["email_attendees"](_ctx(refs, PRIOR))
+
+    assert out.result["sent"] == 2
+    assert [m["to"] for m in ch.sent] == ["anna@unimed.test", "cara@unimed.test"]
+
+

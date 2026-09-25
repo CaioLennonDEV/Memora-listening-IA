@@ -102,6 +102,10 @@ describe("MeetingCanvasView — default view + toggle semantics", () => {
     expect(btn.getAttribute("aria-pressed")).toBe("true");
     expect(btn.textContent).toContain("Processed");
     expect(container.textContent).toContain("cleaned + copilot");
+    const transcriptTab = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Transcrição"));
+    if (transcriptTab) {
+      await act(async () => { transcriptTab.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    }
     expect(container.textContent).toContain("We agreed to ship Friday.");
   });
 

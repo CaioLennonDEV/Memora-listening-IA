@@ -82,7 +82,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/vexa-logo.svg" alt="Memora" width={28} height={28} style={{ borderRadius: 8, display: "block", flex: "none" }} />
+          <img src="/logo.png" alt="Memora" width={28} height={28} style={{ borderRadius: 7, display: "block", flex: "none", objectFit: "contain" }} />
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--t1)" }}>
             {claiming ? "Set up your instance" : "Memora Terminal"}
           </div>
@@ -143,15 +143,15 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ fontSize: 11, color: "var(--t3)", lineHeight: 1.4 }}>
               {claiming && !hasOAuth
-                ? "Email — must contain “test” (test mode)."
-                : "Debug login — email must contain “test”."}
+                ? "Digite seu e-mail para criar a conta de administrador."
+                : "Digite seu e-mail para entrar."}
             </div>
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you-test@company.com"
+              placeholder="exemplo@unimedsulcapixaba.coop.br"
               style={{
                 background: "var(--panel2)", border: "1px solid var(--line2)", borderRadius: 7,
                 padding: "9px 10px", color: "var(--t1)", fontSize: 13, outline: "none",

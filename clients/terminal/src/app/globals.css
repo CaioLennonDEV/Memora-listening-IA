@@ -1,58 +1,11 @@
 @import "tailwindcss";
 
 /*
- * Terminal design tokens — ported verbatim from public/prototype.html so the React shell and the
- * prototype stay pixel-identical as views are extracted. Dark is the primary theme.
+ * Terminal design tokens — locked to Light theme as the fixed default.
  */
 :root {
-  color-scheme: dark;
-  /* Contrast model (Dmitry 2026-07-03): the CENTER (tabs/canvas) is the dark well; BOTH
-   * sidebars (left + chat rail) sit on the same LIGHTER tone so they read as one frame
-   * around the work area. Panels/cards lift a step above whatever they sit on; borders
-   * stay lighter than any fill. */
-  --bg: #0e0e11;
-  --sidebar: #1a1b20;
-  --panel: #222329;
-  --panel2: #2b2c34;
-  --rail: #1a1b20;
-  --line: rgba(255, 255, 255, 0.09);
-  --line2: rgba(255, 255, 255, 0.16);
-  --t1: #ededf0;
-  --t2: #9a9aa4;
-  --t3: #65656f;
-  --accent: #d8855c;
-  --accentbg: rgba(216, 133, 92, 0.14);
-  /* Semantic set (palette A, design-spec meeting-lifecycle-v2): --danger = destructive
-   * actions + errors ONLY (never "live" — live is green); --warn = attention-not-error
-   * (needs_help, waiting, behind). --on-* = text on solid semantic fills. The old --live
-   * token is deliberately GONE so stale usage fails visibly. */
-  --danger: #e0645e;
-  --dangerbg: rgba(224, 100, 94, 0.12);
-  --warn: #d9a13c;
-  --warnbg: rgba(217, 161, 60, 0.14);
-  --on-accent: #241008;
-  --on-green: #08110c;
-  --on-warn: #1a1200;
-  --green: #48b787;
-  --greenbg: rgba(72, 183, 135, 0.14);
-  --blue: #6ea8fe;
-  --bluebg: rgba(110, 168, 254, 0.14);
-  --violet: #b08cf0;
-  --violetbg: rgba(176, 140, 240, 0.14);
-  --r: 8px;
-  --r2: 12px;
-  --mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
-}
-
-/*
- * Day mode — the light counterpart of the dark tokens above. Same variable names so every surface
- * (which paints from var(--*)) switches with no per-component changes. Toggled via the footer control,
- * which sets data-theme="light" on <html>.
- */
-:root[data-theme="light"] {
   color-scheme: light;
-  /* Light mirrors the contrast model: white work area framed by gray sidebars. */
+  /* Light theme default tokens */
   --bg: #ffffff;
   --sidebar: #eeeef2;
   --panel: #f7f7f9;
@@ -78,6 +31,94 @@
   --bluebg: rgba(59, 115, 214, 0.12);
   --violet: #8b5fd6;
   --violetbg: rgba(139, 95, 214, 0.12);
+  --r: 8px;
+  --r2: 12px;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  --sidebar-green: #008c50;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --sidebar: #eeeef2;
+  --panel: #f7f7f9;
+  --panel2: #e6e6eb;
+  --rail: #eeeef2;
+  --line: rgba(0, 0, 0, 0.10);
+  --line2: rgba(0, 0, 0, 0.16);
+  --t1: #1a1a1f;
+  --t2: #5c5c66;
+  --t3: #8a8a94;
+  --accent: #c06a3f;
+  --accentbg: rgba(192, 106, 63, 0.12);
+  --danger: #c9403a;
+  --dangerbg: rgba(201, 64, 58, 0.10);
+  --warn: #b8811f;
+  --warnbg: rgba(184, 129, 31, 0.12);
+  --on-accent: #ffffff;
+  --on-green: #ffffff;
+  --on-warn: #ffffff;
+  --green: #2f9e72;
+  --greenbg: rgba(47, 158, 114, 0.12);
+  --blue: #3b73d6;
+  --bluebg: rgba(59, 115, 214, 0.12);
+  --violet: #8b5fd6;
+  --violetbg: rgba(139, 95, 214, 0.12);
+  --sidebar-green: #008c50;
+}
+
+/*
+ * Memora Sidebar ("Memora terminal")
+ * Fixed brand color: #008c50 with contrast-tailored internal elements and states.
+ */
+.memora-sidebar {
+  width: 250px;
+  min-width: 250px;
+  max-width: 250px;
+  flex-shrink: 0;
+  background-color: #008c50 !important;
+  background: #008c50 !important;
+  color: #ffffff !important;
+  --sidebar: #008c50;
+  --sidebar-green: #008c50;
+  --t1: #ffffff;
+  --t2: rgba(255, 255, 255, 0.88);
+  --t3: rgba(255, 255, 255, 0.70);
+  --line: rgba(255, 255, 255, 0.18);
+  --line2: rgba(255, 255, 255, 0.28);
+  --panel: rgba(255, 255, 255, 0.12);
+  --panel2: rgba(255, 255, 255, 0.22);
+  --accent: #ffffff;
+  --accentbg: rgba(255, 255, 255, 0.22);
+  --on-accent: #008c50;
+}
+
+.memora-sidebar button,
+.memora-sidebar a {
+  color: inherit;
+}
+
+.memora-sidebar input,
+.memora-sidebar textarea,
+.memora-sidebar select {
+  color: #ffffff !important;
+  background-color: rgba(0, 0, 0, 0.22) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+}
+
+.memora-sidebar input::placeholder,
+.memora-sidebar textarea::placeholder {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+
+.memora-sidebar ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+}
+
+.memora-sidebar ::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 html,

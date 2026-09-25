@@ -13,8 +13,9 @@ const SRC = join(__dirname, "..", "..");
 const SCAN_DIRS = ["surfaces", "canvas", "workbench", "ui-kit", "app"];
 // Non-color or deliberate exceptions:
 //  - routines.tsx switch knob: a white knob is correct on both themes' green track.
+//  - workbench/Workbench.tsx: #008c50 sidebar brand color.
 //  - AuthGate/App boxShadow rgba + icon assets are shadows/artwork, not palette colors.
-const HEX_ALLOWLIST = new Set(["surfaces/routines.tsx"]);
+const HEX_ALLOWLIST = new Set(["surfaces/routines.tsx", "workbench/Workbench.tsx"]);
 const HEX_RE = /(?:color|background|border(?:Color|Bottom|Top|Left|Right)?)\s*:\s*[^,;}]*#[0-9a-fA-F]{3,8}\b/;
 
 function* sourceFiles(dir: string): Generator<string> {

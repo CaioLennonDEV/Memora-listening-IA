@@ -7,6 +7,8 @@ const PATHS: Record<string, string> = {
   panel: "M3 3h18v18H3zM9 3v18",
   mail: "M2 4h20v16H2zM22 7l-10 5L2 7",
   cal: "M3 4h18v18H3zM16 2v4M8 2v4M3 10h18",
+  clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2",
+  video: "M15 10l5-4v12l-5-4v3a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3z",
   tasks: "M11 3 8 6 6.5 4.5M11 9 8 12l-1.5-1.5M11 15l-3 3-1.5-1.5M14 5h7M14 11h7M14 17h7",
   zap: "M13 2 3 14h9l-1 8 10-12h-9z",
   send: "M22 2 11 13M22 2l-7 20-4-9-9-4z",

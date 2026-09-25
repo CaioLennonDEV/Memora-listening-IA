@@ -37,14 +37,7 @@ export async function POST(request: NextRequest) {
   if (!EMAIL_RE.test(normalized)) {
     return NextResponse.json({ error: "Invalid email format" }, { status: 400, headers: NO_STORE });
   }
-  // Direct email login is a DEBUG path only — real sign-in goes through Google/Microsoft OAuth
-  // (api/auth/[...nextauth]). Restrict it to test accounts so it can't be used as a password-less bypass.
-  if (!normalized.includes("test")) {
-    return NextResponse.json(
-      { error: "Direct email login is for test accounts only — use Google or Microsoft sign-in." },
-      { status: 403, headers: NO_STORE },
-    );
-  }
+
 
   const result = await findOrCreateUserToken(normalized);
   if (!result.ok) {

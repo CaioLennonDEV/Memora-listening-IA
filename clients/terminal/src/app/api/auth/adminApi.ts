@@ -289,19 +289,71 @@ async function pruneLoginTokens(userId: string | number): Promise<void> {
   }
 }
 
+export async function getEffectiveWhitelist(): Promise<string[]> {
+  const res = await internalRequest<{ key?: string; value?: { emails?: string } }>("/internal/settings/whitelist", {
+    method: "GET",
+  });
+  const dbEmails = (res.ok && res.data?.value?.emails) ? res.data.value.emails : "";
+  const envEmails = process.env.VEXA_FLOWS_EMAIL_WHITELIST || "";
+  const combined = `${envEmails},${dbEmails}`;
+  return combined
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isEmailInWhitelist(email: string, whitelist: string[]): boolean {
+  if (!whitelist.length) return true;
+  const normalized = email.trim().toLowerCase();
+  if (whitelist.includes(normalized)) return true;
+  const domain = normalized.split("@")[1];
+  if (domain && (whitelist.includes(`@${domain}`) || whitelist.includes(domain))) {
+    return true;
+  }
+  return false;
+}
+
 /** Find the user by email, creating them if they don't exist, then mint an APIToken.
  *  Returns the user + token, or an error with an HTTP-ish status for the caller to surface. */
 export async function findOrCreateUserToken(
   email: string,
 ): Promise<{ ok: true; user: AdminUser; token: string } | { ok: false; status: number; error: string }> {
-  const found = await findUserByEmail(email);
+  const normalized = email.trim().toLowerCase();
+
+  // If instance has an admin, verify that the email is allowed by the whitelist / admin list
+  const hasAdmin = await instanceHasAdmin();
+  if (hasAdmin) {
+    const whitelist = await getEffectiveWhitelist();
+    const adminEmails = (process.env.VEXA_ADMIN_EMAILS || "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+
+    const isWhitelisted = isEmailInWhitelist(normalized, whitelist);
+    const isAdminEmail = adminEmails.includes(normalized);
+
+    if (whitelist.length > 0 && !isWhitelisted && !isAdminEmail) {
+      // Check if user already exists as an admin in database
+      const found = await findUserByEmail(normalized);
+      const isExistingAdmin = found.ok && found.data && (found.data as { data?: { is_admin?: boolean } }).data?.is_admin === true;
+      if (!isExistingAdmin) {
+        return {
+          ok: false,
+          status: 403,
+          error: "Este e-mail não está cadastrado na whitelist de usuários autorizados. Solicite liberação ao administrador.",
+        };
+      }
+    }
+  }
+
+  const found = await findUserByEmail(normalized);
 
   let user: AdminUser | undefined;
   let justCreated = false;
   if (found.ok && found.data) {
     user = found.data;
   } else if (found.notFound) {
-    const created = await createUser(email);
+    const created = await createUser(normalized);
     if (!created.ok || !created.data) {
       return { ok: false, status: created.status || 500, error: created.error || "Failed to create user" };
     }

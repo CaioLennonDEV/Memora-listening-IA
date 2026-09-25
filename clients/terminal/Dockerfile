@@ -39,7 +39,7 @@ ENV NEXT_PUBLIC_TERMINAL_MODE=$NEXT_PUBLIC_TERMINAL_MODE
 ARG NEXT_PUBLIC_DEFAULT_BOT_NAME=""
 ENV NEXT_PUBLIC_DEFAULT_BOT_NAME=$NEXT_PUBLIC_DEFAULT_BOT_NAME
 # Regular build (not standalone): produces .next served by the custom server in production.
-RUN npm run build
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # deps-prod: pruned production deps. typescript must ALSO be present — Next loads the TypeScript
 # next.config.ts at runtime and npm-installs its own at BOOT when it's absent. `npm i typescript`

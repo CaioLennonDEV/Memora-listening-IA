@@ -375,6 +375,7 @@ services:
       # The background sweeps' internal lookups: auto-join fetches per-user spawn context
       # (/internal/users/{id}/bot-context) and calendar sync discovers connected ICS feeds
       # (/internal/calendar-configs). Unset -> calendar sync no-ops, auto-join spawns uncapped.
+      - CALENDAR_SYNC_INTERVAL_S=${CALENDAR_SYNC_INTERVAL_S:-60}
       - ADMIN_API_URL=http://admin-api:8001
       # MeetingToken is signed (mint) AND verified (recordings upload) with ADMIN_TOKEN — the SAME
       # admin secret admin-api holds (admin-api gets ADMIN_API_TOKEN=${ADMIN_TOKEN}). Exactly like
@@ -423,6 +424,16 @@ services:
       - VEXA_FLOWS_API_KEY=${VEXA_FLOWS_API_KEY:-}
       # Self-hosted Jitsi hostnames (comma-separated) recognized in pasted + calendar links.
       - VEXA_JITSI_HOSTS=${VEXA_JITSI_HOSTS:-}
+      # Email watcher (IMAP IDLE → auto-dispatch bots from meeting invites). Off by default.
+      # Activation: set IMAP_ENABLED=true + fill IMAP_USER/IMAP_PASSWORD/IMAP_HOST/IMAP_PORT
+      # + IMAP_USER_ID (Vexa DB user id) in .env, then restart meeting-api.
+      - IMAP_ENABLED=${IMAP_ENABLED:-false}
+      - IMAP_USER=${IMAP_USER:-}
+      - IMAP_PASSWORD=${IMAP_PASSWORD:-}
+      - IMAP_HOST=${IMAP_HOST:-imap.gmail.com}
+      - IMAP_PORT=${IMAP_PORT:-993}
+      - IMAP_BOT_NAME=${IMAP_BOT_NAME:-}
+      - IMAP_USER_ID=${IMAP_USER_ID:-}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-vexa-access-key}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-vexa-secret-key}
@@ -439,6 +450,9 @@ services:
       - ../../core/meetings/services/meeting-api/src/meeting_api/calendar_sync/service.py:/app/src/meeting_api/calendar_sync/service.py:ro
       # Hot-patch: Wave 1/2 live roster ingest (type=roster → tc:meeting:{id}).
       - ../../core/meetings/services/meeting-api/src/meeting_api/collector/ingest.py:/app/src/meeting_api/collector/ingest.py:ro
+      # Email watcher: IMAP IDLE loop + meeting link parser (auto-dispatch from inbox).
+      - ../../core/meetings/services/meeting-api/src/meeting_api/email_watcher:/app/src/meeting_api/email_watcher:ro
+      - ../../core/meetings/services/meeting-api/src/meeting_api/__main__.py:/app/src/meeting_api/__main__.py:ro
     command:
       - sh
       - -c
@@ -633,6 +647,7 @@ services:
       - VEXA_FLOWS_MAIL_BODY_MAX=${VEXA_FLOWS_MAIL_BODY_MAX:-4000}
       # ── behaviour and content ───────────────────────────────────────────────────────────────
       - VEXA_FLOWS_ATTENDEE_DOMAINS=${VEXA_FLOWS_ATTENDEE_DOMAINS:-}
+      - VEXA_FLOWS_EMAIL_WHITELIST=${VEXA_FLOWS_EMAIL_WHITELIST:-}
       - VEXA_FLOWS_DATA_STATEMENT=${VEXA_FLOWS_DATA_STATEMENT:-}
       # The private behavior tree a deployment mounts (decision 12). EMPTY IS THE OSS PRODUCT: the
       # showcase baked into the image at /behavior is what flows reads.
@@ -738,6 +753,7 @@ services:
       - VEXA_FLOWS_MAIL_BODY_MAX=${VEXA_FLOWS_MAIL_BODY_MAX:-4000}
       # ── behaviour and content ───────────────────────────────────────────────────────────────
       - VEXA_FLOWS_ATTENDEE_DOMAINS=${VEXA_FLOWS_ATTENDEE_DOMAINS:-}
+      - VEXA_FLOWS_EMAIL_WHITELIST=${VEXA_FLOWS_EMAIL_WHITELIST:-}
       - VEXA_FLOWS_DATA_STATEMENT=${VEXA_FLOWS_DATA_STATEMENT:-}
       # The private behavior tree a deployment mounts (decision 12). EMPTY IS THE OSS PRODUCT: the
       # showcase baked into the image at /behavior is what flows reads.

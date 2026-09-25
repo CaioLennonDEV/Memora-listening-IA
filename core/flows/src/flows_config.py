@@ -197,6 +197,9 @@ DECLARED: dict[str, tuple[str, object, str]] = {
     "VEXA_FLOWS_ATTENDEE_DOMAINS": (
         "capability", None,
         "the OUTBOUND fan-out allow-list (PRD §16.2). Unset = the organizer's own domain."),
+    "VEXA_FLOWS_EMAIL_WHITELIST": (
+        "capability", None,
+        "the OUTBOUND specific email recipient whitelist (comma-separated). When set, only attendees/organizers in this list receive meeting notes."),
     "VEXA_FLOWS_DATA_STATEMENT": ("capability", None, "the deployment's own sentence about where the words live."),
     "VEXA_BEHAVIOR_DIR": ("capability", None, "the private behavior mount; unset uses the in-repo showcase prompts."),
     "VEXA_FLOWS_DEFS_EXTRA": (

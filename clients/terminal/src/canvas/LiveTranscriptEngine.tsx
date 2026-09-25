@@ -137,7 +137,7 @@ function BlockText({ text, entities, actions }: { text: string; entities?: Engin
 
 export function LiveTranscriptEngine({
   segments,
-  emptyLabel = "Waiting for transcript…",
+  emptyLabel = "Aguardando a transcrição…",
   entities,
   signals,
   actions,
@@ -169,15 +169,27 @@ export function LiveTranscriptEngine({
     return <div style={{ color: "var(--t3)", fontSize: 13, padding: "8px 2px" }}>{emptyLabel}</div>;
   }
 
-  const head = (speaker?: string, tsMs?: number) =>
-    speaker ? (
-      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--t2)", marginBottom: 3 }}>
-        {speaker}
-        {typeof tsMs === "number" && (
-          <span style={{ fontWeight: 400, color: "var(--t3)", marginLeft: 8 }}>{new Date(tsMs).toLocaleTimeString()}</span>
-        )}
-      </div>
-    ) : null;
+  function speakerHue(speaker?: string): { bg: string; color: string } {
+    if (!speaker) return { bg: "var(--panel2)", color: "var(--t2)" };
+    const hues = [
+      { bg: "var(--bluebg)", color: "var(--blue)" },
+      { bg: "var(--violetbg)", color: "var(--violet)" },
+      { bg: "var(--greenbg)", color: "var(--green)" },
+      { bg: "var(--accentbg)", color: "var(--accent)" },
+    ];
+    let sum = 0;
+    for (let i = 0; i < speaker.length; i++) sum += speaker.charCodeAt(i);
+    return hues[sum % hues.length];
+  }
+
+  function speakerInitials(speaker?: string): string {
+    if (!speaker) return "?";
+    const parts = speaker.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return speaker.slice(0, 2).toUpperCase();
+  }
 
   // dedupe tags by lowercased label (a keyword mentioned twice in a block shows once)
   const chips = (tags: EngineTag[]) => {
@@ -225,28 +237,121 @@ export function LiveTranscriptEngine({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 13, maxWidth: 760 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 840 }}>
       {blocks.map((b, idx) => {
         const isLast = idx === blocks.length - 1;
+        const hue = speakerHue(b.speaker);
+        const initials = speakerInitials(b.speaker);
         return (
-          <div key={b.key}>
-            {head(b.speaker, b.tsMs)}
-            <div style={{ fontSize: 13.5, color: "var(--t1)", lineHeight: 1.6 }}>
+          <div
+            key={b.key}
+            style={{
+              background: "var(--panel)",
+              border: "1px solid var(--line2)",
+              borderRadius: 12,
+              padding: "14px 18px",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            {b.speaker && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <div
+                    style={{
+                      width: 26,
+                      height: 26,
+                      borderRadius: "50%",
+                      background: hue.bg,
+                      color: hue.color,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontWeight: 700,
+                      fontSize: 11,
+                      flex: "none",
+                    }}
+                  >
+                    {initials}
+                  </div>
+                  <span style={{ fontSize: 13, fontWeight: 650, color: "var(--t1)" }}>
+                    {b.speaker}
+                  </span>
+                </div>
+                {typeof b.tsMs === "number" && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontFamily: "var(--mono)",
+                      color: "var(--t3)",
+                      background: "var(--panel2)",
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                    }}
+                  >
+                    {new Date(b.tsMs).toLocaleTimeString()}
+                  </span>
+                )}
+              </div>
+            )}
+            <div style={{ fontSize: 13.5, color: "var(--t1)", lineHeight: 1.65, paddingLeft: b.speaker ? 35 : 0 }}>
               <BlockText text={b.text} entities={entities} actions={actions} />
               {isLast && liveJoinsLast && (
                 <span style={{ color: "var(--t3)", fontStyle: "italic" }}> {live} …</span>
               )}
             </div>
-            {chips(b.tags)}
-            {signalBadges(isLast && !liveOwnBlock)}
+            {b.tags && b.tags.length > 0 && (
+              <div style={{ paddingLeft: b.speaker ? 35 : 0 }}>{chips(b.tags)}</div>
+            )}
+            {isLast && !liveOwnBlock && signals && signals.length > 0 && (
+              <div style={{ paddingLeft: b.speaker ? 35 : 0 }}>{signalBadges(true)}</div>
+            )}
           </div>
         );
       })}
       {liveOwnBlock && (
-        <div>
-          {head(liveSpeaker)}
-          <div style={{ fontSize: 13.5, color: "var(--t3)", lineHeight: 1.6, fontStyle: "italic" }}>{live} …</div>
-          {signalBadges(true)}
+        <div
+          style={{
+            background: "var(--panel2)",
+            border: "1px dashed var(--accent)",
+            borderRadius: 12,
+            padding: "14px 18px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
+          {liveSpeaker && (
+            <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+              <div
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: "50%",
+                  background: "var(--accentbg)",
+                  color: "var(--accent)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontWeight: 700,
+                  fontSize: 11,
+                  flex: "none",
+                }}
+              >
+                {speakerInitials(liveSpeaker)}
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 650, color: "var(--t1)" }}>{liveSpeaker}</span>
+              <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>Falando agora…</span>
+            </div>
+          )}
+          <div style={{ fontSize: 13.5, color: "var(--t2)", lineHeight: 1.65, fontStyle: "italic", paddingLeft: liveSpeaker ? 35 : 0 }}>
+            {live} …
+          </div>
+          {signals && signals.length > 0 && (
+            <div style={{ paddingLeft: liveSpeaker ? 35 : 0 }}>{signalBadges(true)}</div>
+          )}
         </div>
       )}
     </div>

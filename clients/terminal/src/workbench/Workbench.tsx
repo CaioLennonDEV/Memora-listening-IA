@@ -10,8 +10,8 @@ import "allotment/dist/style.css";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent, type IDockviewPanelProps, type IDockviewPanelHeaderProps, themeAbyss } from "dockview-react";
 import "dockview/dist/styles/dockview.css";
 
-const PANES_KEY = "vexa.terminal.panes.v2";
-const savedSizes = (): number[] | undefined => { try { const s = localStorage.getItem(PANES_KEY); const a = s ? JSON.parse(s) : null; return Array.isArray(a) && a.length === 3 ? a : undefined; } catch { return undefined; } };
+const PANES_KEY = "vexa.terminal.panes.v3";
+const savedSizes = (): number[] | undefined => { try { const s = localStorage.getItem(PANES_KEY); const a = s ? JSON.parse(s) : null; return Array.isArray(a) && a.length === 2 ? a : undefined; } catch { return undefined; } };
 const persistSizes = (s: number[]) => { try { localStorage.setItem(PANES_KEY, JSON.stringify(s)); } catch { /* noop */ } };
 import { useService, useStore, KeybindingServiceId } from "../platform";
 import { LayoutServiceId } from "./layout";
@@ -28,20 +28,8 @@ import { liveMeetingsNow } from "../surfaces/liveMeetings";
 import { firstViewPlan } from "./firstView";
 import { isOwnedPath, meetingIdFromPath, meetingPath } from "../app/meetingRoute";
 import { OPEN_ENTITY_EVENT } from "../canvas/actions";
-import { useTheme } from "../app/theme";
 import { meetingsOnly } from "../app/mode";
-
-// ── theme toggle: dark ⇄ day mode, icon button in the profile row ──
-function ThemeToggle() {
-  const [theme, toggle] = useTheme();
-  const day = theme === "light";
-  return (
-    <button onClick={toggle} title={day ? "Switch to dark mode" : "Switch to day mode"}
-      style={{ flex: "none", display: "flex", alignItems: "center", padding: 4, borderRadius: 6, background: "none", border: "none", color: "var(--t3)", cursor: "pointer" }}>
-      <Icon name={day ? "moon" : "sun"} size={15} />
-    </button>
-  );
-}
+import { ModelChips } from "./ModelChips";
 
 // ── the dockview panel host: render a tab by its kind, tracking active state ─────
 function TabHost(props: IDockviewPanelProps) {
@@ -160,6 +148,8 @@ function LeftPane() {
   // user is on Meetings/Sessions; opening Knowledge clears it.
   const badge = useSyncExternalStore(updatesBadge.subscribe, updatesBadge.count, () => 0);
   const newestRef = useRef(0);
+  const [hoveredListId, setHoveredListId] = useState<string | null>(null);
+
   useEffect(() => {
     const poll = async () => {
       if (document.hidden) return;
@@ -178,29 +168,93 @@ function LeftPane() {
     return () => { clearInterval(iv); window.removeEventListener("focus", onFocus); };
   }, []);
   useEffect(() => { if (activeList === "files") markUpdatesSeen(newestRef.current || Math.floor(Date.now() / 1000)); }, [activeList]);
-  const seg = (on: boolean): CSSProperties => ({ display: "flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 7, fontSize: 12.5, cursor: "pointer", border: "none", color: on ? "var(--t1)" : "var(--t2)", background: on ? "var(--panel2)" : "transparent", flex: "none", whiteSpace: "nowrap" });
+
+  const seg = (on: boolean, hovered: boolean): CSSProperties => ({
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+    padding: "6px 10px",
+    borderRadius: 7,
+    fontSize: 12.5,
+    fontWeight: on ? 600 : 400,
+    cursor: "pointer",
+    border: "none",
+    color: on || hovered ? "#ffffff" : "rgba(255, 255, 255, 0.85)",
+    background: on ? "rgba(255, 255, 255, 0.22)" : hovered ? "rgba(255, 255, 255, 0.12)" : "transparent",
+    flex: "none",
+    whiteSpace: "nowrap",
+    transition: "background 0.15s ease, color 0.15s ease",
+  });
+
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--sidebar)", borderRight: "1px solid var(--line)", minHeight: 0 }}>
+    <div
+      className="memora-sidebar"
+      style={{
+        width: 250,
+        minWidth: 250,
+        maxWidth: 250,
+        flex: "0 0 250px",
+        flexShrink: 0,
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        backgroundColor: "#008c50",
+        background: "#008c50",
+        borderRight: "1px solid rgba(255, 255, 255, 0.18)",
+        minHeight: 0,
+        color: "#ffffff",
+      }}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 14px 8px", flex: "none" }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/vexa-logo.svg" alt="Memora" width={24} height={24} style={{ borderRadius: 7, display: "block", flex: "none" }} />
-        <span style={{ fontSize: 13, fontWeight: 500, color: "var(--t1)" }}>Memora <span style={{ fontWeight: 400, color: "var(--t3)" }}>terminal</span></span>
+        <img src="/logo.png" alt="Memora" width={24} height={24} style={{ borderRadius: 6, display: "block", flex: "none", objectFit: "contain", background: "#ffffff", padding: "2px" }} />
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#ffffff" }}>
+          Memora <span style={{ fontWeight: 400, color: "rgba(255, 255, 255, 0.72)" }}>terminal</span>
+        </span>
       </div>
       {/* stacked vertically — every list is visible at any sidebar width (no horizontal
           overflow/scroll), matching the file-tree rows below */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "2px 8px 8px", borderBottom: "1px solid var(--line)", flex: "none" }}>
-        {lists.map((l) => (
-          <button key={l.id} style={seg(l.id === active?.id)}
-            onClick={() => { layout.setActiveList(l.id); if (l.centerTab) layout.openTab(l.centerTab); }} title={l.label}>
-            <Icon name={l.icon} size={13} />{l.label}
-            {l.id === "files" && badge > 0 && (
-              <span title={`${badge} new update${badge > 1 ? "s" : ""} from other members`}
-                style={{ marginLeft: "auto", background: "var(--accent)", color: "var(--bg)", fontSize: 10, fontWeight: 700, borderRadius: 9, minWidth: 16, textAlign: "center", padding: "0 5px", lineHeight: "16px", flex: "none" }}>
-                {badge}
-              </span>
-            )}
-          </button>
-        ))}
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "2px 8px 8px", borderBottom: "1px solid rgba(255, 255, 255, 0.18)", flex: "none" }}>
+        {lists.map((l) => {
+          const isActive = l.id === active?.id;
+          const isHovered = hoveredListId === l.id;
+          return (
+            <button
+              key={l.id}
+              style={seg(isActive, isHovered)}
+              onMouseEnter={() => setHoveredListId(l.id)}
+              onMouseLeave={() => setHoveredListId(null)}
+              onClick={() => {
+                layout.setActiveList(l.id);
+                if (l.centerTab) layout.openTab(l.centerTab);
+              }}
+              title={l.label}
+            >
+              <Icon name={l.icon} size={13} />
+              {l.label}
+              {l.id === "files" && badge > 0 && (
+                <span
+                  title={`${badge} new update${badge > 1 ? "s" : ""} from other members`}
+                  style={{
+                    marginLeft: "auto",
+                    background: "#ffffff",
+                    color: "#008c50",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    borderRadius: 9,
+                    minWidth: 16,
+                    textAlign: "center",
+                    padding: "0 5px",
+                    lineHeight: "16px",
+                    flex: "none",
+                  }}
+                >
+                  {badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>{Comp && <Comp />}</div>
       <UserProfile />
@@ -215,6 +269,9 @@ function LeftPane() {
 function UserProfile() {
   const layout = useService(LayoutServiceId);
   const [user, setUser] = useState<{ email?: string | null; name?: string | null } | null>(null);
+  const [hoverGear, setHoverGear] = useState(false);
+  const [hoverLogout, setHoverLogout] = useState(false);
+
   useEffect(() => {
     let active = true;
     fetch("/api/auth/me", { cache: "no-store" })
@@ -236,20 +293,23 @@ function UserProfile() {
   };
 
   return (
-    <div style={{ padding: "8px 12px", borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
-      <div style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--panel2)", color: "var(--t1)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 11, flex: "none" }}>{initials}</div>
+    <div style={{ padding: "8px 12px", borderTop: "1px solid rgba(255, 255, 255, 0.18)", display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
+      <div style={{ width: 26, height: 26, borderRadius: "50%", background: "rgba(255, 255, 255, 0.22)", color: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 11, flex: "none" }}>{initials}</div>
       <div style={{ minWidth: 0, flex: 1, lineHeight: 1.25 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 500, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
-        {email && <div style={{ fontSize: 11, color: "var(--t3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{email}</div>}
+        <div style={{ fontSize: 12.5, fontWeight: 500, color: "#ffffff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+        {email && <div style={{ fontSize: 11, color: "rgba(255, 255, 255, 0.72)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{email}</div>}
       </div>
       <button type="button" title="Settings"
         onClick={() => layout.openTab({ id: "settings", title: "Settings", kind: "settings", params: {} })}
-        style={{ flex: "none", background: "transparent", border: "none", color: "var(--t3)", cursor: "pointer", display: "flex", padding: 4, borderRadius: 6 }}>
+        onMouseEnter={() => setHoverGear(true)}
+        onMouseLeave={() => setHoverGear(false)}
+        style={{ flex: "none", background: hoverGear ? "rgba(255, 255, 255, 0.15)" : "transparent", border: "none", color: hoverGear ? "#ffffff" : "rgba(255, 255, 255, 0.85)", cursor: "pointer", display: "flex", padding: 4, borderRadius: 6, transition: "background 0.15s ease, color 0.15s ease" }}>
         <Icon name="gear" size={15} />
       </button>
-      <ThemeToggle />
       <button type="button" title="Sign out" onClick={signOut}
-        style={{ flex: "none", background: "transparent", border: "none", color: "var(--t3)", cursor: "pointer", display: "flex", padding: 4, borderRadius: 6 }}>
+        onMouseEnter={() => setHoverLogout(true)}
+        onMouseLeave={() => setHoverLogout(false)}
+        style={{ flex: "none", background: hoverLogout ? "rgba(255, 255, 255, 0.15)" : "transparent", border: "none", color: hoverLogout ? "#ffffff" : "rgba(255, 255, 255, 0.85)", cursor: "pointer", display: "flex", padding: 4, borderRadius: 6, transition: "background 0.15s ease, color 0.15s ease" }}>
         <Icon name="logout" size={15} />
       </button>
     </div>
@@ -426,12 +486,12 @@ export function Workbench() {
       <div style={{ height: 38, display: "flex", alignItems: "center", gap: 12, padding: "0 12px", borderBottom: "1px solid var(--line)", background: "var(--sidebar)", flex: "none" }}>
         <button aria-label="Toggle left" onClick={() => layout.toggleLeft()} style={{ background: "none", border: "none", color: "var(--t3)", cursor: "pointer", display: "flex" }}><Icon name="panel" size={16} /></button>
         <div style={{ flex: 1, display: "flex", justifyContent: "center", minWidth: 0 }}><OpsNotice /></div>
+        <ModelChips />
         <button aria-label="Toggle right" onClick={() => layout.toggleRight()} style={{ background: "none", border: "none", color: "var(--t3)", cursor: "pointer", display: "flex", transform: "scaleX(-1)" }}><Icon name="panel" size={16} /></button>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
-        {/* chat-only (Sessions) gets its own sizes — the freed center space goes to the CHAT (right), with a
-            narrow left sidebar; full mode keeps the user's saved 3-pane sizes. The `key` re-lays-out on switch. */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row", overflow: "hidden" }}>
+        {/* Fixed-width left sidebar — locked width, no resize sash */}
         {(() => {
           // single-pane resolution: center wins when it has content, else chat.
           const centerHasContent = !chatOnly && activeTab != null;
@@ -441,30 +501,46 @@ export function Workbench() {
             ? !(showCenter)                                   // ¼-width: exactly one pane
             : (chatOnly || !rightCollapsed));
           return (
-            <Allotment
-              key={`${chatOnly ? "chat-only" : "full"}-${tier}`}
-              onChange={(s) => { if (!chatOnly && tier === "full") persistSizes(s); }}
-              defaultSizes={chatOnly ? [20, 80] : (savedSizes() ?? [15, 55, 30])}
-            >
-              <Allotment.Pane visible={showLeft} minSize={180} preferredSize={chatOnly ? "20%" : "15%"}>
-                <LeftPane />
-              </Allotment.Pane>
-              {!chatOnly && (
-                <Allotment.Pane visible={showCenter} minSize={tier === "full" ? 360 : 200} preferredSize="55%">
-                  <div style={{ height: "100%", position: "relative" }}>
-                    <div style={{ position: "absolute", inset: 0 }}>
-                      <DockviewReact onReady={onReady} components={dvComponents} tabComponents={dvTabComponents} defaultTabComponent={TabHeader} theme={themeAbyss} />
-                    </div>
-                  </div>
-                </Allotment.Pane>
+            <>
+              {showLeft && (
+                <aside
+                  style={{
+                    width: 250,
+                    minWidth: 250,
+                    maxWidth: 250,
+                    height: "100%",
+                    flex: "0 0 250px",
+                    flexShrink: 0,
+                    overflow: "hidden",
+                  }}
+                >
+                  <LeftPane />
+                </aside>
               )}
-              {/* meetings-only: the chat rail never MOUNTS (not merely hidden) — no agent fetches fire */}
-              {!meetOnly && (
-                <Allotment.Pane visible={showRight} minSize={tier === "full" ? 300 : 200} preferredSize={chatOnly ? "80%" : "30%"}>
-                  <RightPane />
-                </Allotment.Pane>
-              )}
-            </Allotment>
+              <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
+                <Allotment
+                  key={`${chatOnly ? "chat-only" : "full"}-${tier}`}
+                  onChange={(s) => { if (!chatOnly && tier === "full") persistSizes(s); }}
+                  defaultSizes={chatOnly ? [100] : (savedSizes() ?? (meetOnly ? [100] : [65, 35]))}
+                >
+                  {!chatOnly && (
+                    <Allotment.Pane visible={showCenter} minSize={tier === "full" ? 360 : 200} preferredSize="65%">
+                      <div style={{ height: "100%", position: "relative" }}>
+                        <div style={{ position: "absolute", inset: 0 }}>
+                          <DockviewReact onReady={onReady} components={dvComponents} tabComponents={dvTabComponents} defaultTabComponent={TabHeader} theme={themeAbyss} />
+                        </div>
+                      </div>
+                    </Allotment.Pane>
+                  )}
+                  {/* meetings-only: the chat rail never MOUNTS (not merely hidden) — no agent fetches fire */}
+                  {!meetOnly && (
+                    <Allotment.Pane visible={showRight} minSize={tier === "full" ? 300 : 200} preferredSize={chatOnly ? "100%" : "35%"}>
+                      <RightPane />
+                    </Allotment.Pane>
+                  )}
+                </Allotment>
+              </div>
+            </>
           );
         })()}
       </div>
