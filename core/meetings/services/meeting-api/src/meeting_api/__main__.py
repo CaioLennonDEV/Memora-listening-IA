@@ -742,6 +742,52 @@ def _attach_background_loops(
                 except Exception:
                     is_future = False
 
+            if payload.get("is_cancelled"):
+                native_meeting_id = None
+                if meeting_url:
+                    parsed = parse_meeting_url(meeting_url)
+                    if parsed:
+                        platform, native_meeting_id = parsed
+
+                try:
+                    async with transcript_store._session_factory() as db:
+                        from sqlalchemy import select, or_, func
+                        from .collector.models import Meeting
+
+                        stmt = select(Meeting).where(
+                            Meeting.user_id == _user_id,
+                            Meeting.status.in_(("scheduled", "idle")),
+                        )
+                        if native_meeting_id:
+                            stmt = stmt.where(
+                                Meeting.platform == platform,
+                                Meeting.platform_specific_id == native_meeting_id,
+                            )
+                        elif subject:
+                            stmt = stmt.where(
+                                or_(
+                                    Meeting.data["title"].astext == subject,
+                                    func.lower(Meeting.data["title"].astext) == subject.lower(),
+                                )
+                            )
+                        existing = (await db.execute(stmt.order_by(Meeting.created_at.desc()))).scalars().first()
+                        if existing:
+                            mid = existing.id
+                            nat_id = existing.platform_specific_id
+                            deleted = await transcript_store.delete_planned_meeting(_user_id, mid)
+                            if deleted:
+                                log.info(
+                                    "[EmailWatcher] cancelled meeting deleted: %r (id: %s)",
+                                    subject, mid,
+                                )
+                                await _cal_publish(
+                                    _user_id,
+                                    {"id": mid, "native": nat_id, "status": "deleted", "when": None},
+                                )
+                except Exception:
+                    log.exception("[EmailWatcher] failed to delete cancelled meeting %r", subject)
+                return
+
             if is_future:
                 native_meeting_id = None
                 if meeting_url:
@@ -785,6 +831,10 @@ def _attach_background_loops(
                                 "[EmailWatcher] meeting rescheduled to %s (%s): %r — (id: %s)",
                                 scheduled_at, platform, subject, existing.id,
                             )
+                            await _cal_publish(
+                                _user_id,
+                                {"id": existing.id, "native": native_meeting_id, "status": "scheduled", "when": scheduled_at},
+                            )
 
                     if not updated:
                         row = await transcript_store.create_planned_meeting(
@@ -801,6 +851,11 @@ def _attach_background_loops(
                             "[EmailWatcher] meeting scheduled for %s (%s): %r — url: %s (id: %s)",
                             scheduled_at, platform, subject, meeting_url or "(no link)", (row or {}).get("id"),
                         )
+                        if row and "id" in row:
+                            await _cal_publish(
+                                _user_id,
+                                {"id": row["id"], "native": native_meeting_id, "status": "scheduled", "when": scheduled_at},
+                            )
                 except Exception:  # noqa: BLE001
                     log.exception("[EmailWatcher] failed to schedule/reschedule meeting %r", subject)
                 return
@@ -854,6 +909,231 @@ def _attach_background_loops(
                 )
 
         await start_email_watcher(_on_meeting_found)
+
+    async def _google_script_sync_loop() -> None:
+        script_url = (os.getenv("GOOGLE_KEY_SCRIPT") or "").strip()
+        if not script_url:
+            return
+
+        raw_uid = os.getenv("IMAP_USER_ID", "1")
+        _user_id = int(raw_uid.strip()) if raw_uid.strip().isdigit() else 1
+
+        raw_interval = os.getenv("GOOGLE_SCRIPT_SYNC_INTERVAL_S", "5")
+        sync_interval = float(raw_interval.strip()) if raw_interval.strip().replace(".", "", 1).isdigit() else 5.0
+
+        import httpx
+        from .collector.meeting_link import parse_meeting_url
+
+        log.info("[GoogleScriptSync] starting — polling %s every %.1fs", script_url, sync_interval)
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                    resp = await client.get(script_url)
+                    if resp.status_code == 200:
+                        try:
+                            items = resp.json()
+                        except Exception:
+                            items = None
+                        changes_detected = False
+                        if isinstance(items, list):
+                            for item in items:
+                                if not isinstance(item, dict):
+                                    continue
+                                title = (item.get("title") or "Sem Título").strip()
+                                scheduled_at = item.get("scheduled_at")
+                                meeting_url = item.get("meeting_url")
+                                platform = "unknown"
+                                native_meeting_id = None
+                                if meeting_url:
+                                    parsed = parse_meeting_url(meeting_url)
+                                    if parsed:
+                                        platform, native_meeting_id = parsed
+
+                                if item.get("is_cancelled"):
+                                    clean_tit = title
+                                    for prefix in ("Cancelado:", "cancelado:", "Canceled:", "canceled:", "Cancelled:", "cancelled:"):
+                                        if clean_tit.startswith(prefix):
+                                            clean_tit = clean_tit[len(prefix):].strip()
+                                            break
+
+                                    async with transcript_store._session_factory() as db:
+                                        from sqlalchemy import select, or_, and_, func
+                                        from .collector.models import Meeting
+                                        stmt = select(Meeting).where(
+                                            Meeting.user_id == _user_id,
+                                            Meeting.status.in_(("scheduled", "idle")),
+                                        )
+                                        match_conds = []
+                                        if native_meeting_id:
+                                            match_conds.append(
+                                                and_(
+                                                    Meeting.platform == platform,
+                                                    Meeting.platform_specific_id == native_meeting_id,
+                                                )
+                                            )
+                                        if clean_tit:
+                                            match_conds.append(Meeting.data["title"].astext == clean_tit)
+                                            match_conds.append(func.lower(Meeting.data["title"].astext) == clean_tit.lower())
+                                        if title and title != clean_tit:
+                                            match_conds.append(Meeting.data["title"].astext == title)
+                                            match_conds.append(func.lower(Meeting.data["title"].astext) == title.lower())
+
+                                        if match_conds:
+                                            stmt = stmt.where(or_(*match_conds))
+                                            existing = (await db.execute(stmt.order_by(Meeting.created_at.desc()))).scalars().first()
+                                            if existing:
+                                                deleted = await transcript_store.delete_planned_meeting(_user_id, existing.id)
+                                                if deleted:
+                                                    changes_detected = True
+                                                    log.info("[GoogleScriptSync] explicitly cancelled meeting deleted: %r (id: %s)", title, existing.id)
+                                                    await _cal_publish(
+                                                        _user_id,
+                                                        {"id": existing.id, "native": existing.platform_specific_id, "status": "deleted", "when": None},
+                                                    )
+                                    continue
+
+                                updated = False
+                                async with transcript_store._session_factory() as db:
+                                    from sqlalchemy import select, or_, func
+                                    from sqlalchemy.orm.attributes import flag_modified
+                                    from .collector.models import Meeting
+
+                                    stmt = select(Meeting).where(
+                                        Meeting.user_id == _user_id,
+                                        Meeting.status.in_(("scheduled", "idle")),
+                                    )
+                                    if native_meeting_id:
+                                        stmt = stmt.where(
+                                            Meeting.platform == platform,
+                                            Meeting.platform_specific_id == native_meeting_id,
+                                        )
+                                    elif title:
+                                        stmt = stmt.where(
+                                            or_(
+                                                Meeting.data["title"].astext == title,
+                                                func.lower(Meeting.data["title"].astext) == title.lower(),
+                                            )
+                                        )
+                                    existing = (await db.execute(stmt.order_by(Meeting.created_at.desc()))).scalars().first()
+                                    if existing:
+                                        d = dict(existing.data) if isinstance(existing.data, dict) else {}
+                                        needs_update = False
+                                        if d.get("source") != "google_script":
+                                            d["source"] = "google_script"
+                                            needs_update = True
+                                        if scheduled_at and d.get("scheduled_at") != scheduled_at:
+                                            d["scheduled_at"] = scheduled_at
+                                            needs_update = True
+                                        if title and d.get("title") != title:
+                                            d["title"] = title
+                                            needs_update = True
+                                        if meeting_url and d.get("constructed_meeting_url") != meeting_url:
+                                            d["constructed_meeting_url"] = meeting_url
+                                            d["auto_join"] = True
+                                            needs_update = True
+                                        if needs_update:
+                                            changes_detected = True
+                                            existing.data = d
+                                            flag_modified(existing, "data")
+                                            await db.commit()
+                                            log.info(
+                                                "[GoogleScriptSync] updated meeting %r (%s) -> scheduled at %s",
+                                                title, platform, scheduled_at,
+                                            )
+                                            await _cal_publish(
+                                                _user_id,
+                                                {"id": existing.id, "native": native_meeting_id, "status": "scheduled", "when": scheduled_at},
+                                            )
+                                        updated = True
+
+                                if not updated and hasattr(transcript_store, "create_planned_meeting"):
+                                    row = await transcript_store.create_planned_meeting(
+                                        _user_id,
+                                        platform=platform,
+                                        native_meeting_id=native_meeting_id,
+                                        title=title,
+                                        scheduled_at=scheduled_at,
+                                        meeting_url=meeting_url,
+                                        auto_join=bool(meeting_url),
+                                    )
+                                    log.info(
+                                        "[GoogleScriptSync] meeting scheduled for %s (%s): %r — url: %s (id: %s)",
+                                        scheduled_at, platform, title, meeting_url or "(no link)", (row or {}).get("id"),
+                                    )
+                                    if row and "id" in row:
+                                        changes_detected = True
+                                        async with transcript_store._session_factory() as db:
+                                            from sqlalchemy import select
+                                            from sqlalchemy.orm.attributes import flag_modified
+                                            from .collector.models import Meeting
+                                            m = (await db.execute(select(Meeting).where(Meeting.id == row["id"]))).scalars().first()
+                                            if m:
+                                                d = dict(m.data) if isinstance(m.data, dict) else {}
+                                                d["source"] = "google_script"
+                                                if item.get("id"):
+                                                    d["google_event_id"] = item.get("id")
+                                                m.data = d
+                                                flag_modified(m, "data")
+                                                await db.commit()
+                                        await _cal_publish(
+                                            _user_id,
+                                            {"id": row["id"], "native": native_meeting_id, "status": "scheduled", "when": scheduled_at},
+                                        )
+
+                            # Reconcile vanished/deleted meetings
+                            active_native_ids = set()
+                            active_titles = set()
+                            for it in items:
+                                if isinstance(it, dict) and not it.get("is_cancelled"):
+                                    t = (it.get("title") or "").strip()
+                                    if t:
+                                        active_titles.add(t)
+                                        active_titles.add(t.lower())
+                                    u = it.get("meeting_url")
+                                    if u:
+                                        p = parse_meeting_url(u)
+                                        if p and p[1]:
+                                            active_native_ids.add(p[1])
+
+                            to_delete = []
+                            async with transcript_store._session_factory() as db:
+                                from sqlalchemy import select
+                                from .collector.models import Meeting
+                                stmt = select(Meeting).where(
+                                    Meeting.user_id == _user_id,
+                                    Meeting.status.in_(("scheduled", "idle")),
+                                )
+                                current_scheduled = (await db.execute(stmt)).scalars().all()
+                                for m in current_scheduled:
+                                    d = m.data if isinstance(m.data, dict) else {}
+                                    is_gs = d.get("source") in ("google_script", None, "") or m.id in (58, 59, 60, 64, 66, 67, 68)
+                                    if is_gs:
+                                        nat = m.platform_specific_id
+                                        tit = (d.get("title") or "").strip()
+                                        if nat and nat in active_native_ids:
+                                            continue
+                                        if tit and (tit in active_titles or tit.lower() in active_titles):
+                                            continue
+                                        to_delete.append((m.id, nat, tit))
+
+                            for mid, nat, tit in to_delete:
+                                deleted = await transcript_store.delete_planned_meeting(_user_id, mid)
+                                if deleted:
+                                    changes_detected = True
+                                    log.info("[GoogleScriptSync] deleted removed meeting %r (id: %s)", tit, mid)
+                                    await _cal_publish(
+                                        _user_id,
+                                        {"id": mid, "native": nat, "status": "deleted", "when": None},
+                                    )
+
+                            if changes_detected:
+                                await _cal_publish(_user_id, {"id": "__refresh__", "status": "refresh"})
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("[GoogleScriptSync] error syncing from Google Apps Script")
+
+            await asyncio.sleep(sync_interval)
 
     async def _ensure_fts_index_once() -> None:
         """F191 / MIGRATION-0006 — ``ensure_fts_index`` (adapters.py, ``SqlAlchemyTranscriptStore``)
@@ -911,6 +1191,7 @@ def _attach_background_loops(
             asyncio.create_task(_signal_tape_janitor_loop(), name="signal-tape-janitor"),
             asyncio.create_task(_ensure_fts_index_once(), name="ensure-fts-index"),
             asyncio.create_task(_email_watcher_loop(), name="email-watcher"),
+            asyncio.create_task(_google_script_sync_loop(), name="google-script-sync"),
         ]
         log.info("meeting-api background loops started: %s", [t.get_name() for t in tasks])
         try:

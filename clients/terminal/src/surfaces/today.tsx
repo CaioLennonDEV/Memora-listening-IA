@@ -520,25 +520,18 @@ function TodayView() {
           </div>
         </div>
 
-        {empty ? (
-          <MeetingsOnboarding variant="full" />
-        ) : (
-          <>
-            <MeetingsOnboarding variant="slim" />
-            <div style={{
-              marginTop: 14,
-              border: "1px solid var(--line)",
-              borderRadius: 12,
-              background: "var(--panel)",
-              overflow: "hidden",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.02)"
-            }}>
-              {days.length === 0
-                ? <div style={{ padding: "16px 18px", fontSize: 12.5, color: "var(--t3)" }}>Nothing this week.</div>
-                : days.map((d) => <DayRow key={d.key} day={d} isToday={d.key === todayKey} ownTree={ownTree} />)}
-            </div>
-          </>
-        )}
+        <div style={{
+          marginTop: 14,
+          border: "1px solid var(--line)",
+          borderRadius: 12,
+          background: "var(--panel)",
+          overflow: "hidden",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.02)"
+        }}>
+          {days.length === 0
+            ? <div style={{ padding: "16px 18px", fontSize: 12.5, color: "var(--t3)" }}>Nothing this week.</div>
+            : days.map((d) => <DayRow key={d.key} day={d} isToday={d.key === todayKey} ownTree={ownTree} />)}
+        </div>
 
         {past.length > 0 && (
           <div style={{ marginTop: 28 }}>
@@ -571,26 +564,7 @@ function TodayView() {
           </div>
         )}
 
-        {!empty && (
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "12px 16px",
-            borderRadius: 8,
-            background: "var(--panel)",
-            border: "1px solid var(--line)",
-            fontSize: 12,
-            color: "var(--t3)",
-            margin: "28px 0 16px",
-            lineHeight: 1.5
-          }}>
-            <Icon name="info" size={15} style={{ color: "var(--t2)", flex: "none" }} />
-            <span>
-              Reuniões anteriores ficam armazenadas na Base de Conhecimento — pergunte ao agente sobre qualquer coisa que tenha sido dita ou decidida.
-            </span>
-          </div>
-        )}
+
       </div>
     </div>
   );

@@ -87,8 +87,9 @@ def _imap_config() -> dict:
 
 
 def _extract_email_info(raw_bytes: bytes) -> dict:
-    """Parse raw MIME message → dict with plain, html, cal_text, scheduled_at, calendar_uid, subject."""
+    """Parse raw MIME message → dict with plain, html, cal_text, scheduled_at, calendar_uid, subject, is_cancelled."""
     import icalendar
+    import re
     from datetime import datetime, timezone
     from email.header import decode_header
 
@@ -97,6 +98,7 @@ def _extract_email_info(raw_bytes: bytes) -> dict:
     scheduled_at_iso = None
     cal_uid = None
     cal_summary = None
+    is_cancelled = False
 
     if msg.is_multipart():
         for part in msg.walk():
@@ -114,7 +116,11 @@ def _extract_email_info(raw_bytes: bytes) -> dict:
                 cal_text = text
                 try:
                     cal = icalendar.Calendar.from_ical(payload)
+                    if cal.get("METHOD") and str(cal.get("METHOD")).upper() == "CANCEL":
+                        is_cancelled = True
                     for comp in cal.walk("VEVENT"):
+                        if comp.get("STATUS") and str(comp.get("STATUS")).upper() == "CANCELLED":
+                            is_cancelled = True
                         dt_prop = comp.get("DTSTART")
                         if dt_prop:
                             dt = dt_prop.dt
@@ -152,7 +158,11 @@ def _extract_email_info(raw_bytes: bytes) -> dict:
             cal_text = raw_text
             try:
                 cal = icalendar.Calendar.from_ical(payload or b"")
+                if cal.get("METHOD") and str(cal.get("METHOD")).upper() == "CANCEL":
+                    is_cancelled = True
                 for comp in cal.walk("VEVENT"):
+                    if comp.get("STATUS") and str(comp.get("STATUS")).upper() == "CANCELLED":
+                        is_cancelled = True
                     dt_prop = comp.get("DTSTART")
                     if dt_prop:
                         dt = dt_prop.dt
@@ -185,56 +195,104 @@ def _extract_email_info(raw_bytes: bytes) -> dict:
     except Exception:
         subject = str(raw_sub)
 
+    cancel_pat = r"^\s*(cancelad[oa]|canceled|cancelled)\s*:\s*"
+    if subject and re.match(cancel_pat, subject, re.IGNORECASE):
+        is_cancelled = True
+    if cal_summary and re.match(cancel_pat, cal_summary, re.IGNORECASE):
+        is_cancelled = True
+
+    clean_subject = re.sub(cancel_pat, "", subject or "", flags=re.IGNORECASE).strip()
+    clean_cal_summary = re.sub(cancel_pat, "", cal_summary or "", flags=re.IGNORECASE).strip() if cal_summary else None
+
     return {
         "plain": plain,
         "html_body": html_body,
         "cal_text": cal_text,
         "scheduled_at": scheduled_at_iso,
         "calendar_uid": cal_uid,
-        "subject": cal_summary or subject or "(no subject)",
+        "subject": clean_cal_summary or clean_subject or "(no subject)",
+        "raw_subject": cal_summary or subject or "(no subject)",
+        "is_cancelled": is_cancelled,
     }
 
 
 # ── IMAP session ────────────────────────────────────────────────────────────
 
 
-async def _process_unseen(imap, cfg: dict, on_meeting_found: Callable) -> None:
-    """Fetch every UNSEEN message and call ``on_meeting_found`` for each meeting."""
+async def _process_messages(
+    imap, cfg: dict, on_meeting_found: Callable, processed_uids: set[str]
+) -> None:
+    """Fetch unseen and recent messages by UID and dispatch on_meeting_found."""
     from .meeting_parser import extract_meeting
 
-    # Search for unseen messages
-    _status, data = await imap.search("UNSEEN")
-    if not data or not data[0]:
+    # 1. Search for UNSEEN UIDs
+    try:
+        _s, data = await imap.uid_search("UNSEEN")
+        unseen_uids = data[0].split() if data and data[0] else []
+    except Exception:
+        unseen_uids = []
+
+    # 2. Also inspect the last 20 UIDs in INBOX to catch emails read in webmail/mobile
+    try:
+        _s2, all_data = await imap.uid_search("ALL")
+        all_uids = all_data[0].split() if all_data and all_data[0] else []
+        recent_uids = all_uids[-20:]
+    except Exception:
+        recent_uids = []
+
+    uids_to_check = []
+    seen_in_batch = set()
+    for uid_bytes in (recent_uids + unseen_uids):
+        uid = uid_bytes.decode()
+        if uid not in processed_uids and uid not in seen_in_batch:
+            uids_to_check.append(uid)
+            seen_in_batch.add(uid)
+
+    if not uids_to_check:
         return
 
-    raw_ids = data[0].split()
-    if not raw_ids:
-        return
+    for uid in uids_to_check:
+        processed_uids.add(uid)
+        try:
+            _fs, fetch_data = await imap.uid("FETCH", uid, "(BODY.PEEK[])")
+        except Exception:
+            continue
 
-    uid_list = b",".join(raw_ids)
-    # Fetch full RFC 822 body
-    _fs, fetch_data = await imap.fetch(
-        uid_list.decode(), "(RFC822)",
-    )
-
-    for chunk in fetch_data:
         raw = None
-        if isinstance(chunk, tuple) and len(chunk) == 2:
-            raw = chunk[1]
-        elif isinstance(chunk, bytearray):
-            raw = bytes(chunk)
-        elif (
-            isinstance(chunk, bytes)
-            and not chunk.startswith(b")")
-            and b"FETCH completed" not in chunk
-            and b"FETCH (" not in chunk
-        ):
-            raw = chunk
+        for chunk in fetch_data:
+            if isinstance(chunk, (bytes, bytearray)) and len(chunk) > 100:
+                raw = bytes(chunk)
+                break
+            elif isinstance(chunk, tuple) and len(chunk) == 2:
+                raw = chunk[1]
+                break
 
         if not raw:
             continue
 
         info = _extract_email_info(raw)
+
+        if info.get("is_cancelled"):
+            log.info(
+                "[EmailWatcher] meeting cancellation detected: %r (uid=%s, scheduled=%s)",
+                info["subject"], info["calendar_uid"], info["scheduled_at"],
+            )
+            try:
+                await on_meeting_found(
+                    {
+                        "platform": "unknown",
+                        "meeting_url": None,
+                        "bot_name": cfg["bot_name"],
+                        "subject": info["subject"],
+                        "scheduled_at": info["scheduled_at"],
+                        "calendar_uid": info["calendar_uid"],
+                        "is_cancelled": True,
+                    }
+                )
+            except Exception:
+                log.exception("[EmailWatcher] on_meeting_found callback raised for cancellation")
+            continue
+
         meeting = extract_meeting(
             info["plain"],
             info["html_body"],
@@ -258,10 +316,11 @@ async def _process_unseen(imap, cfg: dict, on_meeting_found: Callable) -> None:
                         "bot_name": cfg["bot_name"],
                         "subject": info["subject"],
                         "scheduled_at": info["scheduled_at"],
-                        "calendar_uid": None,
+                        "calendar_uid": info["calendar_uid"],
+                        "is_cancelled": False,
                     }
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.exception("[EmailWatcher] on_meeting_found callback raised")
         elif info["scheduled_at"]:
             log.info(
@@ -277,21 +336,29 @@ async def _process_unseen(imap, cfg: dict, on_meeting_found: Callable) -> None:
                         "bot_name": cfg["bot_name"],
                         "subject": info["subject"],
                         "scheduled_at": info["scheduled_at"],
-                        "calendar_uid": None,
+                        "calendar_uid": info["calendar_uid"],
+                        "is_cancelled": False,
                     }
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.exception("[EmailWatcher] on_meeting_found callback raised")
 
-    # Mark as seen (STORE +FLAGS \Seen)
-    await imap.store(uid_list.decode(), "+FLAGS", r"(\Seen)")
 
-
-async def _run_once(imap_config: dict, on_meeting_found: Callable) -> None:
+async def _run_once(imap_config: dict, on_meeting_found: Callable, processed_uids: set[str]) -> None:
     """Open one IMAP IDLE session and run until the connection drops."""
     import aioimaplib  # imported lazily — not in the offline gate venv
 
-    imap = aioimaplib.IMAP4_SSL(host=imap_config["host"], port=imap_config["port"])
+    conn_lost_event = asyncio.Event()
+
+    def _on_conn_lost(exc):
+        conn_lost_event.set()
+
+    imap = aioimaplib.IMAP4_SSL(
+        host=imap_config["host"],
+        port=imap_config["port"],
+        timeout=15.0,
+    )
+    imap.protocol.conn_lost_cb = _on_conn_lost
     await imap.wait_hello_from_server()
     await imap.login(imap_config["user"], imap_config["password"])
     await imap.select("INBOX")
@@ -299,17 +366,32 @@ async def _run_once(imap_config: dict, on_meeting_found: Callable) -> None:
     log.info("[EmailWatcher] connected — listening for meeting invites on %s", imap_config["user"])
 
     # Process any messages that arrived while we were offline
-    await _process_unseen(imap, imap_config, on_meeting_found)
+    await _process_messages(imap, imap_config, on_meeting_found, processed_uids)
 
     while True:
-        # IDLE: tell the server to push notifications instead of us polling.
-        # wait_server_push blocks until a push arrives OR timeout (seconds).
-        # Per RFC 3501, IDLE sessions should be refreshed every ~29 minutes.
-        idle_task = await imap.idle_start(timeout=1740)
+        if conn_lost_event.is_set():
+            raise ConnectionResetError("IMAP connection lost")
+
+        # IDLE: refresh every 300s (5 min) to keep NAT tables alive and avoid dead socket stalls
+        idle_task = await imap.idle_start(timeout=300)
+        push_lines = None
         try:
-            push_lines = await imap.wait_server_push(timeout=1740)  # 29 min
-        except asyncio.TimeoutError:
-            push_lines = None
+            push_waiter = asyncio.create_task(imap.wait_server_push(timeout=300))
+            conn_lost_waiter = asyncio.create_task(conn_lost_event.wait())
+            done, pending = await asyncio.wait(
+                [push_waiter, conn_lost_waiter],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+
+            if conn_lost_event.is_set():
+                raise ConnectionResetError("IMAP connection lost during IDLE")
+
+            try:
+                push_lines = push_waiter.result()
+            except Exception:
+                push_lines = None
         finally:
             imap.idle_done()
             try:
@@ -317,10 +399,10 @@ async def _run_once(imap_config: dict, on_meeting_found: Callable) -> None:
             except Exception:
                 pass
 
-        # Any push (EXISTS = new mail, EXPUNGE, FLAGS) triggers a UNSEEN scan.
+        # Any push (or timeout refresh) triggers a scan
         if push_lines:
             log.debug("[EmailWatcher] server push received, scanning INBOX…")
-        await _process_unseen(imap, imap_config, on_meeting_found)
+        await _process_messages(imap, imap_config, on_meeting_found, processed_uids)
 
 
 # ── public entrypoint ───────────────────────────────────────────────────────
@@ -347,10 +429,11 @@ async def start_email_watcher(
         log.warning("[EmailWatcher] disabled: %s", exc)
         return
 
+    processed_uids: set[str] = set()
     backoff = 5.0
     while True:
         try:
-            await _run_once(cfg, on_meeting_found)
+            await _run_once(cfg, on_meeting_found, processed_uids)
         except asyncio.CancelledError:
             log.info("[EmailWatcher] shutting down")
             raise

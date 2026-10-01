@@ -8,13 +8,13 @@
    "secret": true,
    "description": "HS256-signs the per-spawn MeetingToken AND verifies the recordings upload — the same admin secret admin-api holds (ADMIN_API_TOKEN); unset, every POST /bots would 500, so the boot refuses instead (A4). A PUBLISHED PLACEHOLDER is refused on the same terms as INTERNAL_API_SECRET: the literal is in this repository, so anyone can forge a MeetingToken and upload a recording against any meeting (A19).",
    "forbidden_values": [
-     "vexa-internal-secret",
-     "lite-internal-secret",
-     "changeme",
-     "change-me",
-     "CHANGE-ME",
-     "default",
-     "secret"
+    "vexa-internal-secret",
+    "lite-internal-secret",
+    "changeme",
+    "change-me",
+    "CHANGE-ME",
+    "default",
+    "secret"
    ]
   },
   {
@@ -98,13 +98,13 @@
    "secret": true,
    "description": "shared secret for internal service-to-service calls (x-internal-secret on the self-driven lifecycle callback). Unset is a documented degrade; a PUBLISHED PLACEHOLDER is not — it is the whole internal tier handed to anyone who read the repository (F95), so the boot refuses it.",
    "forbidden_values": [
-     "vexa-internal-secret",
-     "lite-internal-secret",
-     "changeme",
-     "change-me",
-     "CHANGE-ME",
-     "default",
-     "secret"
+    "vexa-internal-secret",
+    "lite-internal-secret",
+    "changeme",
+    "change-me",
+    "CHANGE-ME",
+    "default",
+    "secret"
    ]
   },
   {
@@ -643,31 +643,45 @@
   {
    "key": "VEXA_FLOWS_API_URL",
    "class": "publish-edge",
-   "publishes_events": ["meeting.started", "meeting.completed"],
+   "publishes_events": [
+    "meeting.started",
+    "meeting.completed"
+   ],
    "description": "flows' intake, told when a bot this service dispatched goes active and when it completes (F168/F181 — an ad hoc bot started via the MCP request_meeting_bot never reached flows before this; only invite_intake's own emit_started/emit_completed, calendar-only, ever did). MEETING-API TELLS FLOWS; IT DOES NOT ASK IT — best-effort, bounded at 2s, swallowed (events.py), so a deployment with no flows domain runs meetings exactly as one with a flows domain does, and so does one where flows is down. Unset is a profile, not a degraded state. Spelled VEXA_FLOWS_API_URL to match agent-api's control_plane/config.v1.json (identity's admin-api spells the bare key FLOWS_API_URL for the same edge — the two publishers that already exist do not agree with each other; not fixed here).",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "VEXA_FLOWS_API_KEY",
    "class": "publish-edge",
-   "publishes_events": ["meeting.started", "meeting.completed"],
+   "publishes_events": [
+    "meeting.started",
+    "meeting.completed"
+   ],
    "secret": true,
    "description": "operator key for the same edge, sent as X-Flows-Operator-Key (flows' POST /events is authenticated). Declared as part of the edge rather than beside it, on the same terms as identity's admin-api and agent-api's control_plane declare theirs: unset alongside an unset URL is the no-flows profile; unset with a URL set is a deployment whose facts are being refused.",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "IMAP_ENABLED",
    "class": "defaulted",
    "default": "false",
    "description": "enables the background IMAP IDLE listener that auto-dispatches bots when meeting invitations arrive via email (false by default — explicit operator opt-in)",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "IMAP_USER",
    "class": "defaulted",
    "default": "",
    "description": "email address / username for IMAP IDLE mailbox access",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "IMAP_PASSWORD",
@@ -675,35 +689,63 @@
    "default": "",
    "secret": true,
    "description": "password or app password for IMAP IDLE mailbox authentication",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "IMAP_HOST",
    "class": "defaulted",
    "default": "imap.gmail.com",
    "description": "hostname of the IMAP server to connect to for push notifications",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "IMAP_PORT",
    "class": "defaulted",
    "default": "993",
    "description": "port of the IMAP server (SSL)",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "IMAP_BOT_NAME",
    "class": "defaulted",
    "default": "Atena",
    "description": "bot display name override for meetings dispatched via email watcher",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "IMAP_USER_ID",
    "class": "defaulted",
    "default": "",
    "description": "Vexa DB user ID under whose quota bots dispatched by the email watcher run",
-   "targets": ["compose"]
+   "targets": [
+    "compose"
+   ]
+  },
+  {
+   "key": "GOOGLE_KEY_SCRIPT",
+   "class": "defaulted",
+   "default": "",
+   "description": "Google Apps Script Web App URL for syncing calendar events",
+   "targets": [
+    "compose"
+   ]
+  },
+  {
+   "key": "GOOGLE_SCRIPT_SYNC_INTERVAL_S",
+   "class": "defaulted",
+   "default": "5",
+   "description": "Interval in seconds between Google Apps Script calendar polls",
+   "targets": [
+    "compose"
+   ]
   }
  ],
  "capabilities": {

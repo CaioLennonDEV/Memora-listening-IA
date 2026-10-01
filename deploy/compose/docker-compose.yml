@@ -143,11 +143,7 @@ services:
       - VEXA_FLOWS_API_URL=${VEXA_FLOWS_API_URL:-}
       - VEXA_FLOWS_API_KEY=${VEXA_FLOWS_API_KEY:-}
     volumes:
-      # Hot-patch (no rebuild): DEFAULT_BOT_NAME-aware bot-name fallbacks — Hub image may still
-      # hardcode "Vexa" in bot-context; bind local sources so DPI-blocked builds aren't required.
-      - ../../core/identity/services/admin-api/src/admin_api/app/calendars.py:/app/src/admin_api/app/calendars.py:ro
-      - ../../core/identity/services/admin-api/src/admin_api/app/main.py:/app/src/admin_api/app/main.py:ro
-      - ../../core/identity/services/admin-api/src/admin_api/app/person_settings.py:/app/src/admin_api/app/person_settings.py:ro
+      - ../../core/identity/services/admin-api/src:/app/src:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)"]
       interval: 10s
@@ -234,10 +230,7 @@ services:
       # host path from env (docker.sock → daemon binds), not this in-container path.
       - ${HOST_CUSTOM_CA:-/dev/null}:/etc/vexa/certs/custom-ca.crt:ro
       # Hot-patch: Hub image may predate HOST_CUSTOM_CA spawn support; bind local docker_backend
-      # so SonicWALL CA reaches bots without `docker compose build` (build also fails under DPI-SSL).
-      - ../../core/runtime/src/runtime_kernel/docker_backend.py:/app/src/runtime_kernel/docker_backend.py:ro
-      # Hot-patch: forward BOT_ROSTER_ALONE_DEBOUNCE_MS into spawned bots.
-      - ../../core/runtime/src/runtime_kernel/profiles.py:/app/src/runtime_kernel/profiles.py:ro
+      - ../../core/runtime/src:/app/src:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8090/health').status==200 else 1)"]
       interval: 10s
@@ -434,6 +427,8 @@ services:
       - IMAP_PORT=${IMAP_PORT:-993}
       - IMAP_BOT_NAME=${IMAP_BOT_NAME:-}
       - IMAP_USER_ID=${IMAP_USER_ID:-}
+      - GOOGLE_KEY_SCRIPT=${GOOGLE_KEY_SCRIPT:-}
+      - GOOGLE_SCRIPT_SYNC_INTERVAL_S=${GOOGLE_SCRIPT_SYNC_INTERVAL_S:-8}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-vexa-access-key}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-vexa-secret-key}
